@@ -1,18 +1,20 @@
-## nano-scGPT
+# nano-scGPT
 
 The simplest, fastest repository for scGPT inference, (soon) finetuning and trianing, with minimal dependencies. It reimplements the original [scGPT](https://github.com/bowang-lab/scGPT) from scratch. `nano_scgpt/model.py` is pure PyTorch in ~270 lines of code, and `nano_scgpt/scGPT_tokenizer.py` turns raw scRNA data into model input. Small enough to read in one sitting and hack on.
 
-### Why nano-scGPT
+![nano_scgpt](assets/nano_vs_og.png)
+
+## Why nano-scGPT
 Cell modeling is potentially the most exciting and under-indexed AI/ML area. The hope is to make state-of-the-art cell models more accessible to run, understand, and tinker with.
 
-### Install
+## Install
 ```bash
 git clone https://github.com/Danqi7/nano-scGPT.git
 cd nano-scgpt
 pip install -e .       # or: uv pip install -e .
 ```
 
-### Quick Start
+## Quick Start
 ```python
 # scGPT Embedding example
 import numpy as np
@@ -30,8 +32,8 @@ embeddings = model.encode(encoded["gene_ids"], encoded["exprs"], encoded["paddin
 
 ```
 
-### Task: Embed .h5ad scRNA data
-```bash
+## Task: Embed .h5ad scRNA data
+```sh
 # Example: Tabula Sapiens lung data (downloaded automatically)
 python task/embedding.py
 
@@ -46,12 +48,12 @@ python task/embedding.py \
     --output <path to save embeddings>
 ```
 
-### todos
+## todos
 - [ ] Finetuning for perturbation response prediction
 - [ ] Training from scratch
 
 Let me know what tasks or even models you'd like to see next!
 
-### Acknowledgments
+## Acknowledgments
 1. This repository reimplements scGPT from scratch. All credit for the original model and method goes to the authors (Cui et al., *Nature Methods*, 2024). See the [original repo](https://github.com/bowang-lab/scGPT) and [paper](https://doi.org/10.1038/s41592-024-02201-0).
 2. nano-scGPT is inspired by Andrej Karpathy's [nanoGPT](https://github.com/karpathy/nanogpt) and Chris Hayduk's [minAlphaFold2](https://github.com/ChrisHayduk/minAlphaFold2).
