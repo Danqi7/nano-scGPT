@@ -1,17 +1,14 @@
 import os
 import scanpy as sc
 
-import time
 import argparse
 from tqdm import tqdm
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-import sys
-sys.path.append("../")
-from scGPT_tokenizer import _check_log1ped, scGPTTokenizer, scGPTDataset
-from model import scGPTModel
+from nano_scgpt.scGPT_tokenizer import _check_log1ped, scGPTTokenizer, scGPTDataset
+from nano_scgpt.model import scGPTModel
 
 DEFAULT_INPUT_URL = "https://datasets.cellxgene.cziscience.com/d6761a21-e226-434f-9370-fbcc7e549aa0.h5ad"
 
@@ -45,7 +42,7 @@ if __name__ == "__main__":
          else:
             print("var_names appears to contain gene symbols. Adding to 'gene_symbol' column...")
             adata.var['gene_symbol'] = var_names
-    adata.var_names = adata.var["gene_symbol"]
+    adata.var_names = adata.var["gene_symbol"].astype(str)
     adata.var_names_make_unique(join="_")
     print(f"Embedding adata of shape {adata.shape}...")
     

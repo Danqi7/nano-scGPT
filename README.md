@@ -1,14 +1,14 @@
 ## nano-scGPT
 
-The simplest, fastest repository for scGPT inference, (soon) finetuning and trianing, with minimal dependencies. It reimplements the original [scGPT](https://github.com/bowang-lab/scGPT) from scratch. `model.py` is pure PyTorch in ~270 lines of code, and `scGPT_tokenizer.py` turns raw scRNA data into model input. Small enough to read in one sitting and hack on.
+The simplest, fastest repository for scGPT inference, (soon) finetuning and trianing, with minimal dependencies. It reimplements the original [scGPT](https://github.com/bowang-lab/scGPT) from scratch. `nano_scgpt/model.py` is pure PyTorch in ~270 lines of code, and `nano_scgpt/scGPT_tokenizer.py` turns raw scRNA data into model input. Small enough to read in one sitting and hack on.
 
 ### Why nano-scGPT
 Cell modeling is potentially the most exciting and under-indexed AI/ML area. The hope is to make state-of-the-art cell models more accessible to run, understand, and tinker with.
 
 ## Install
-
+gi
 ```bash
-git clone https://github.com//nano-scgpt
+git clone https://github.com/Danqi7/nano-scGPT.git
 cd nano-scgpt
 pip install -e .       # or: uv pip install -e .
 ```
@@ -17,8 +17,8 @@ pip install -e .       # or: uv pip install -e .
 ```python
 # scGPT Embedding example
 import numpy as np
-from model import scGPTModel
-from scGPT_tokenizer import scGPTTokenizer
+from nano_scgpt.scGPT_tokenizer import scGPTTokenizer
+from nano_scgpt.model import scGPTModel
 
 model = scGPTModel.from_pretrained("scGPT_human")
 model.eval()
@@ -34,21 +34,20 @@ embeddings = model.encode(encoded["gene_ids"], encoded["exprs"], encoded["paddin
 ### Task: Embed .h5ad scRNA data
 ```bash
 # Example: Tabula Sapiens lung data (downloaded automatically)
-python timed_embedding.py
+python task/embedding.py
 
 # Or on your own local file
-python timed_embedding.py \
+python task/embedding.py \
     --input <path to local .h5ad file> \
     --output <path to save embeddings>
 
 # Or from a remote URL
-python timed_embedding.py \
+python task/embedding.py \
     --input_url <URL to a remote .h5ad file> \
     --output <path to save embeddings>
 ```
 
-
-### Todo List
+### todos
 - [ ] Finetuning for perturbation response prediction
 - [ ] Training from scratch
 
