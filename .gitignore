@@ -1,0 +1,18 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Data, pretrained weights
+data/
+pretrained_weights/
+*.h5ad
+*.pkl
+*.npy
+
