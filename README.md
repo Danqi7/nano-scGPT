@@ -6,7 +6,6 @@ The simplest, fastest repository for scGPT inference, (soon) finetuning and tria
 Cell modeling is potentially the most exciting and under-indexed AI/ML area. The hope is to make state-of-the-art cell models more accessible to run, understand, and tinker with.
 
 ## Install
-gi
 ```bash
 git clone https://github.com/Danqi7/nano-scGPT.git
 cd nano-scgpt
