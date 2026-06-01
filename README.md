@@ -1,16 +1,36 @@
 # nano-scGPT
 
-The simplest, fastest repository for scGPT inference, (soon) finetuning and trianing, with minimal dependencies. It reimplements the original [scGPT](https://github.com/bowang-lab/scGPT) from scratch. `nano_scgpt/model.py` is pure PyTorch in ~270 lines of code, and `nano_scgpt/scGPT_tokenizer.py` turns raw scRNA data into model input. Small enough to read in one sitting and hack on.
+The simplest, fastest repository for scGPT inference, (soon) finetuning and training, with minimal dependencies. It reimplements the original [scGPT](https://github.com/bowang-lab/scGPT) from scratch. `nano_scgpt/model.py` is pure PyTorch in ~270 lines of code, and `nano_scgpt/scGPT_tokenizer.py` turns raw scRNA data into model input. Small enough to read in one sitting and hack on.
 
 ![nano_scgpt](assets/nano_vs_og.png)
+
+*Embeddings are numerically equivalent to the original scGPT.*
 
 ## Why nano-scGPT
 Cell modeling is potentially the most exciting and under-indexed AI/ML area. The hope is to make state-of-the-art cell models more accessible to run, understand, and tinker with.
 
+## Runtime
+nano-scGPT produces embeddings numerically equivalent to the original
+while running **1.38x** faster, mostly from a clean forward pass plus `torch.compile`.
+
+<!-- | Stage (per batch) | nano-scGPT | scGPT    |
+| ----------------- | ---------- | -------- |
+| Data loading      | 0.0282 s   | 0.0309 s |
+| Forward           | 0.2690 s   | 0.3809 s | -->
+
+| Model      | Total (65,847 cells) | Per cell | Throughput  | Speedup |
+| ---------- | -------------------- | -------- | ----------- | ------- |
+| nano-scGPT | 77.7 s               | 1.18 ms  | **847 cells/s** | **1.38×**   |
+| scGPT      | 107.0 s              | 1.63 ms  | 615 cells/s | 1.00×   |
+
+<!-- The gain is almost entirely in the forward pass.The original scGPT carries a lot of unnecessary branches and checks; nano-scGPT's clean implementation is also what lets `torch.compile` actually help. -->
+
+> benchmarked under: A100, batch size 256, AMP autocast, Tabula Sapiens lung (65,847 cells).
+
 ## Install
 ```bash
 git clone https://github.com/Danqi7/nano-scGPT.git
-cd nano-scgpt
+cd nano-scGPT
 pip install -e .       # or: uv pip install -e .
 ```
 
@@ -21,7 +41,7 @@ import numpy as np
 from nano_scgpt.scGPT_tokenizer import scGPTTokenizer
 from nano_scgpt.model import scGPTModel
 
-model = scGPTModel.from_pretrained("scGPT_human")
+model = scGPTModel.from_pretrained("scGPT_human") # weights pulled from HF hub
 model.eval()
 
 tokenizer = scGPTTokenizer.from_pretrained("scGPT_human")
@@ -35,15 +55,15 @@ embeddings = model.encode(encoded["gene_ids"], encoded["exprs"], encoded["paddin
 ## Task: Embed .h5ad scRNA data
 ```sh
 # Example: Tabula Sapiens lung data (downloaded automatically)
-python task/embedding.py
+python tasks/embedding.py
 
 # Or on your own local file
-python task/embedding.py \
+python tasks/embedding.py \
     --input <path to local .h5ad file> \
     --output <path to save embeddings>
 
 # Or from a remote URL
-python task/embedding.py \
+python tasks/embedding.py \
     --input_url <URL to a remote .h5ad file> \
     --output <path to save embeddings>
 ```
