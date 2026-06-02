@@ -31,8 +31,16 @@ while running **1.38x** faster, mostly from a clean forward pass plus `torch.com
 ```bash
 git clone https://github.com/Danqi7/nano-scGPT.git
 cd nano-scGPT
-python -m venv .venv && source .venv/bin/activate # or uv venv
-pip install -e .       # or: uv pip install -e .
+```
+#### Option A: using uv
+```bash
+uv sync
+source .venv/bin/activate
+```
+#### Option B: using pip
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -e .
 ```
 
 ## Quick Start
