@@ -16,3 +16,5 @@ pretrained_weights/
 *.pkl
 *.npy
 
+*.DS_Store
+

@@ -26,7 +26,7 @@ class scGPTDataset(Dataset):
     def __init__(self, adata, tokenizer):
         self.adata = adata
         self.tokenizer = tokenizer
-        self.gene_names = adata.var['gene_symbol'].tolist() # !HACK:use gene symbols instead of Ensembl IDs
+        self.gene_names = adata.var['gene_symbol'].tolist()
 
         self.vocab_genes_idx = [idx for idx, g in enumerate(self.gene_names) if g in self.tokenizer.vocab]
         self.aligned_gene_ids = np.array([self.tokenizer.vocab[self.gene_names[idx]] for idx in self.vocab_genes_idx]) # shape [G_vocab]
@@ -77,7 +77,6 @@ class scGPTDataset(Dataset):
 class scGPTTokenizerConfig:
     model_type: str = "scGPT_human"
 
-    # vocab_file: str = "../pretrained_weights/scGPT_human/vocab.json"
     special_tokens: List[str] = field(default_factory=lambda: ["<cls>", "<pad>", "<eoc>"])
     max_length: int = 1200
 
@@ -113,7 +112,7 @@ class scGPTTokenizer:
                  **kwargs) -> Dict[str, torch.Tensor]:
         # Align Vocab.
         vocab_genes_idx = [idx for idx, g in enumerate(gene_names) if g in self.vocab]
-        import pdb; pdb.set_trace()
+
         aligned_exprs = exprs[:, vocab_genes_idx] # shape [B, G_vocab]
         aligned_gene_ids = np.array([self.vocab[gene_names[idx]] for idx in vocab_genes_idx]) # shape [G_vocab]
         if len(aligned_gene_ids) == 0:
@@ -219,3 +218,19 @@ class scGPTTokenizer:
                 vocab[s] = len(vocab)
         
         return cls(vocab, config)
+    
+if __name__ == "__main__":
+    from model import scGPTModel
+    from scGPT_tokenizer import scGPTTokenizer
+
+    model = scGPTModel.from_pretrained("scGPT_human")
+    model.eval()
+    model.to('cpu')
+
+    tokenizer = scGPTTokenizer.from_pretrained("scGPT_human")
+    genes = ['DUX4L30', 'CTB-52I2.4', 'USP17L16P', 'RPL7P23']
+    exprs = np.array([[1.0, 0.0, 23.0, 6.0], [0.0, 0.0, 3.0, 7.0]])
+    encoded = tokenizer.encode(exprs, genes)
+    embeddings = model.encode(encoded["gene_ids"], encoded["exprs"], encoded["padding_mask"])
+    
+    print(f'Embeddings shape: {embeddings.shape}')
