@@ -219,19 +219,3 @@ class scGPTTokenizer:
                 vocab[s] = len(vocab)
         
         return cls(vocab, config)
-
-if __name__ == "__main__":
-    from model import scGPTModel
-    from scGPT_tokenizer import scGPTTokenizer
-
-    model = scGPTModel.from_pretrained("scGPT_human")
-    model.eval()
-    model.to('cpu')
-
-    tokenizer = scGPTTokenizer.from_pretrained("scGPT_human")
-    genes = ['DUX4L30', 'CTB-52I2.4', 'USP17L16P', 'RPL7P23']
-    exprs = np.array([[1.0, 0.0, 23.0, 6.0], [0.0, 0.0, 3.0, 7.0]])
-    encoded = tokenizer.encode(exprs, genes)
-    embeddings = model.encode(encoded["gene_ids"], encoded["exprs"], encoded["padding_mask"])
-    
-    print(f'Embeddings shape: {embeddings.shape}')
