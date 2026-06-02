@@ -25,7 +25,7 @@ while running **1.38x** faster, mostly from a clean forward pass plus `torch.com
 
 <!-- The gain is almost entirely in the forward pass.The original scGPT carries a lot of unnecessary branches and checks; nano-scGPT's clean implementation is also what lets `torch.compile` actually help. -->
 
-> benchmarked under: A100, batch size 256, AMP autocast, Tabula Sapiens lung (65,847 cells).
+> benchmarked under: single A100, batch size 256, AMP autocast, Tabula Sapiens lung (65,847 cells).
 
 ## Install
 ```bash
@@ -77,3 +77,6 @@ Let me know what tasks or even models you'd like to see next!
 ## Acknowledgments
 1. This repository reimplements scGPT from scratch. All credit for the original model and method goes to the authors (Cui et al., *Nature Methods*, 2024). See the [original repo](https://github.com/bowang-lab/scGPT) and [paper](https://doi.org/10.1038/s41592-024-02201-0).
 2. nano-scGPT is inspired by Andrej Karpathy's [nanoGPT](https://github.com/karpathy/nanogpt) and Chris Hayduk's [minAlphaFold2](https://github.com/ChrisHayduk/minAlphaFold2).
+
+## License
+MIT. See [LICENSE](LICENSE)
