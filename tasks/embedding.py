@@ -26,6 +26,8 @@ if __name__ == "__main__":
         adata = sc.read(args.input)
     else:
         print(f"Downloading input data from {args.input_url}...")
+        if os.path.exists("data/tmp.h5ad"):
+            os.remove("data/tmp.h5ad")
         adata = sc.read("data/tmp.h5ad", backup_url=args.input_url)
 
     # Ensure gene symbols are available in adata.var['gene_symbol'].

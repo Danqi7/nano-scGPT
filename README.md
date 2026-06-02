@@ -25,12 +25,13 @@ while running **1.38x** faster, mostly from a clean forward pass plus `torch.com
 
 <!-- The gain is almost entirely in the forward pass.The original scGPT carries a lot of unnecessary branches and checks; nano-scGPT's clean implementation is also what lets `torch.compile` actually help. -->
 
-> benchmarked under: single A100, batch size 256, AMP autocast, Tabula Sapiens lung (65,847 cells).
+> benchmarked under: single A100, batch size 256, AMP autocast, 10 batch warmup, Tabula Sapiens lung (65,847 cells).
 
 ## Install
 ```bash
 git clone https://github.com/Danqi7/nano-scGPT.git
 cd nano-scGPT
+python -m venv .venv && source .venv/bin/activate # or uv venv
 pip install -e .       # or: uv pip install -e .
 ```
 
