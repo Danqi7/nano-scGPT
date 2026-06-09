@@ -1,10 +1,10 @@
 from dataclasses import dataclass
-from pathlib import Path
 
 import torch
 import torch.nn as nn
 
 from huggingface_hub import hf_hub_download
+from safetensors.torch import load_file
 
 @dataclass
 class scGPTConfig:
@@ -224,33 +224,9 @@ class scGPTModel(nn.Module):
 
         config = scGPTConfig()
         model = cls(config)
-
-        model_path = hf_hub_download(repo_id="wanglab/scGPT-human", filename="best_model.pt")
-        pretrained_sd = torch.load(model_path, map_location="cpu", weights_only=True)
-        model = _filter_and_copy_state_dict(model, pretrained_sd)        
+     
+        model_path = hf_hub_download(repo_id="paradoxdan/nano-scGPT", filename="model.safetensors")
+        state_dict = load_file(model_path, device="cpu")
+        model.load_state_dict(state_dict)
 
         return model
-
-
-def _filter_and_copy_state_dict(model: nn.Module, sd: dict, verbose: bool = False):
-    model_sd = model.state_dict()
-    compatible = {}
-    missing = []
-    mismatched = []
-
-    sd = {k.replace("Wqkv.", "in_proj."): v for k, v in sd.items()} # 'Wqkv.' -> 'in_proj.' for flash attention weights.
-
-    for k in sd.keys():
-        if k not in model_sd:
-            missing.append(k)
-        elif sd[k].shape != model_sd[k].shape:
-            mismatched.append(k)
-        else:
-            compatible[k] = sd[k]
-
-    model_sd.update(compatible)
-    model.load_state_dict(model_sd)
-
-    print(f"Model loaded with {len(compatible)} compatible parameters.")
-
-    return model
