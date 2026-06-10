@@ -25,7 +25,8 @@ class scGPTConfig:
     
 
     pad_token: str = "<pad>"
-    pad_value: int = -2
+    pad_token_id: int = 60694
+    pad_value: int = -2 #TODO: double check if it should be set to 0 during prp.
 
     use_batch_labels: bool = False
     num_batch_labels: int | None = None
@@ -190,12 +191,18 @@ class scGPTModel(nn.Module):
     def forward(self, 
                 gene_ids: torch.Tensor, 
                 gene_values: torch.Tensor, 
-                src_key_padding_mask: torch.BoolTensor | None = None, 
+                src_key_padding_mask: torch.BoolTensor | None = None,
+                pert_labels: torch.Tensor | None = None,
                 batch_labels: torch.Tensor | None = None) -> torch.Tensor:
         gene_embds = self.encoder(gene_ids)
         value_embds = self.value_encoder(gene_values)
         if self.config.input_embd == "continuous":
             input_embds = gene_embds + value_embds
+            
+            if pert_labels is not None:
+                pert_encoder = nn.Embedding(3, self.config.n_embd, padding_idx=2)
+                pert_embds = pert_encoder(pert_labels)
+                input_embds = input_embds + pert_embds
         else:
             raise NotImplementedError(
                         f"input_emb_style='{self.config.input_embd}' not yet supported. "
@@ -230,3 +237,45 @@ class scGPTModel(nn.Module):
         model.load_state_dict(state_dict)
 
         return model
+
+class scGPTForPerturbationResponsePrediction(nn.Module):
+
+    def __init__(self, config):
+        super().__init__()
+        self.encoder = scGPTModel(config)
+        self.decoder = AffineExprDecoder(config.n_embd)
+
+    def forward(self, 
+                gene_ids: torch.Tensor, 
+                gene_values: torch.Tensor, 
+                src_key_padding_mask: torch.BoolTensor | None = None, 
+                batch_labels: torch.Tensor | None = None) -> torch.Tensor:
+        h = self.scgpt(gene_ids, gene_values, src_key_padding_mask, batch_labels) # [B, T, n_embd]
+        response_pred = self.perturbation_response_head(h).squeeze(-1) # [B, T]
+        
+        return response_pred
+
+
+class AffineExprDecoder(nn.Module):
+    def __init__(
+        self,
+        d_model: int
+    ):
+        
+        super().__init__()
+
+        self.decoder = nn.Sequential(
+            nn.Linear(d_model, d_model),
+            nn.LeakyReLU(),
+            nn.Linear(d_model, d_model),
+            nn.LeakyReLU(),
+            nn.Linear(d_model, 2), # outputting coeff and bias for each gene
+        )
+
+    def forward(self, x: torch.Tensor, values: torch.Tensor) -> torch.Tensor:
+        coeff_bias = self.decoder(x) # [B, T, 2]
+        coeff = coeff_bias[..., 0] # [B, T]
+        bias = coeff_bias[..., 1] # [B, T]
+
+        pred = coeff * values + bias
+        return pred
