@@ -25,6 +25,7 @@ class scGPTConfig:
     
 
     pad_token: str = "<pad>"
+    pad_token_id: int = 60694
     pad_value: int = -2
 
     use_batch_labels: bool = False
@@ -133,7 +134,7 @@ class scGPTGeneEncoder(nn.Module):
         super().__init__()
         vocab_size = config.vocab_size
         n_embd = config.n_embd
-        padding_idx = config.pad_value
+        padding_idx = config.pad_token_id
 
         self.embedding = nn.Embedding(
             vocab_size, n_embd, padding_idx=padding_idx
