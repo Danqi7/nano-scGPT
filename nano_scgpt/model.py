@@ -177,6 +177,7 @@ class scGPTModel(nn.Module):
 
         self.encoder = scGPTGeneEncoder(config)
         self.value_encoder = scGPTContinuousValueEncoder(config) # TODO: support categorical/scaling value encoders as well.
+        self.pert_encoder = nn.Embedding(3, config.n_embd, padding_idx=2)
 
         self.transformer_encoder = nn.ModuleDict(dict(
             layers = nn.ModuleList([scGPTBlock(config) for _ in range(config.n_layer)]),
@@ -200,8 +201,7 @@ class scGPTModel(nn.Module):
             input_embds = gene_embds + value_embds
             
             if pert_labels is not None:
-                pert_encoder = nn.Embedding(3, self.config.n_embd, padding_idx=2)
-                pert_embds = pert_encoder(pert_labels)
+                pert_embds = self.pert_encoder(pert_labels)
                 input_embds = input_embds + pert_embds
         else:
             raise NotImplementedError(
@@ -234,7 +234,7 @@ class scGPTModel(nn.Module):
      
         model_path = hf_hub_download(repo_id="paradoxdan/nano-scGPT", filename="model.safetensors")
         state_dict = load_file(model_path, device="cpu")
-        model.load_state_dict(state_dict)
+        model.load_state_dict(state_dict, strict=False)
 
         return model
 
@@ -242,18 +242,32 @@ class scGPTForPerturbationResponsePrediction(nn.Module):
 
     def __init__(self, config):
         super().__init__()
-        self.encoder = scGPTModel(config)
+        self.scgpt = scGPTModel(config)
         self.decoder = AffineExprDecoder(config.n_embd)
 
     def forward(self, 
                 gene_ids: torch.Tensor, 
                 gene_values: torch.Tensor, 
-                src_key_padding_mask: torch.BoolTensor | None = None, 
+                src_key_padding_mask: torch.BoolTensor | None = None,
+                pert_labels: torch.Tensor | None = None,
                 batch_labels: torch.Tensor | None = None) -> torch.Tensor:
-        h = self.scgpt(gene_ids, gene_values, src_key_padding_mask, batch_labels) # [B, T, n_embd]
-        response_pred = self.perturbation_response_head(h).squeeze(-1) # [B, T]
+        h = self.scgpt(gene_ids, gene_values, src_key_padding_mask, pert_labels) # [B, T, n_embd]
+        pred = self.decoder(h, gene_values).squeeze(-1) # [B, T]
         
-        return response_pred
+        return pred
+
+    @classmethod
+    def from_pretrained(cls, model_type="scGPT_human"):
+        base = scGPTModel.from_pretrained(model_type)
+        model = cls(base.config)
+        model.scgpt = base
+
+        print(
+            f"Loaded scGPT base weights, with {model.scgpt.get_num_params()/1e6:.2f}M parameters. "
+            f"Decoder randomly initialized with {sum(p.numel() for p in model.decoder.parameters())/1e6:.2f}M params."
+        )
+        return model
+
 
 
 class AffineExprDecoder(nn.Module):
