@@ -1,10 +1,144 @@
+from typing import Dict, List, Tuple
+
 import numpy as np
 import torch
 from torch.utils.data import Dataset
+    
+
+class PerturbationDataSplitter:
+
+    def __init__(self, adata, tokenizer, 
+                 train_gene_set_size=0.75,
+                 combo_seen2_train_size=0.75,
+                 train_val_gene_set_size=0.9,
+                 train_val_combo_seen2_train_size=0.9,
+                 splits=['train', 'val', 'test'], 
+                 seed=1):
+        self.adata = adata
+        self.tokenizer = tokenizer
+        self.splits = splits
+
+        pert_names = adata.obs['condition'].unique().tolist()
+        pert_names.remove("ctrl")
+        assert splits == ['train', 'val', 'test'], "Only support train/val/test splits for now."
+        
+        train_pert_names, test_pert_names, test_subgroups = self.split_perturbations(pert_names,
+                                                                        train_gene_set_size=train_gene_set_size, 
+                                                                        combo_seen2_train_size=combo_seen2_train_size,
+                                                                        seed=seed)
+        train_pert_names, val_pert_names, val_subgroups = self.split_perturbations(train_pert_names,
+                                                                        train_gene_set_size=train_val_gene_set_size, 
+                                                                        combo_seen2_train_size=train_val_combo_seen2_train_size,
+                                                                        seed=seed)
+        self.train_pert_names = train_pert_names
+        self.val_pert_names = val_pert_names
+        self.test_pert_names = test_pert_names
+        self.test_subgroups = test_subgroups
+        self.val_subgroups = val_subgroups
+
+        print('Test subgroups:')
+        for k, v in test_subgroups.items():
+            print(f"{k}: {len(v)} perturbations")
+
+        # Map perturbation names to splits and create adata subsets for each split.
+        pert2split = {}
+        for p in train_pert_names:
+            pert2split[p] = "train"
+        for p in val_pert_names:
+            pert2split[p] = "val"
+        for p in test_pert_names:
+            pert2split[p] = "test"
+        pert2split["ctrl"] = "ctrl"
+        adata.obs['split'] = adata.obs['condition'].map(pert2split)
+        
+        self.train_adata = adata[(adata.obs['split']  == "train") | (adata.obs['split'] == "ctrl")]
+        self.test_adata = adata[(adata.obs['split'] == "test") | (adata.obs['split'] == "ctrl")]
+        self.val_adata = adata[(adata.obs['split'] == "val") | (adata.obs['split'] == "ctrl")]
+
+    def get_train_val_test(self):
+        return self.train_adata, self.val_adata, self.test_adata
+
+    def get_gene_set_from_perturnations(self, pert_names: List[str]) -> List[str]:
+        """Extract the unique set of genes in the perturbations from the list of perturbation names, excluding the "ctrl" condition."""
+        gene_set = set()
+        for pert in pert_names:
+            genes = pert.split("+")
+            for g in genes:
+                if g != "ctrl":
+                    gene_set.add(g)
+        return sorted(list(gene_set))
+
+    def split_perturbations(self, pert_names, 
+                            train_gene_set_size=0.75, 
+                            combo_seen2_train_size=0.75, 
+                            seed=1) -> Tuple[List[str], List[str], Dict[str, List[str]]]:
+        """
+        Split perturbations into train and test sets, and further categorize the test perturbations into combo_seen0, combo_seen1, combo_seen2, 
+        and single_unseen based on the presence of their individual genes in the training set.
+
+        Args:
+            pert_names: list of perturbation names, e.g. ["geneA", "geneB", "geneA+ctrl", ...], excluding "ctrl".
+            train_gene_set_size: fraction of individual genes to be included in the training set.
+            combo_seen2_train_size: fraction of comb perturbations with both genes individually seen in the train set to be included in the train set.
+            seed: random seed for reproducibility.
+        Returns:
+            train_pert_names: list of perturbation names for training.
+            test_pert_names: list of perturbation names for testing.
+            test_subgroups: dict with keys "combo_seen0", "combo_seen1", "combo_seen2", "single_unseen", each containing a list of perturbation names for that category.
+        """
+        np.random.seed(seed)
+
+        train_names = []
+        test_names = []
+        unique_genes = self.get_gene_set_from_perturnations(pert_names)
+
+        train_genes_candidates = np.random.choice(unique_genes, size=int(len(unique_genes)*train_gene_set_size), replace=False)
+        ood_genes = np.setdiff1d(unique_genes, train_genes_candidates)
+        print(f"Split perturbations - Unique perturbed genes: {len(unique_genes)} | Train gene candidates: {len(train_genes_candidates)} | OOD genes: {len(ood_genes)}")
+
+        # All single-gene perturbations with genes in the train candidates go to the train set;
+        # combo-gene perturbations with 1 gene in the train candidates go to the test set as combo_seen1;
+        # frac of combo-gene perturbations with both genes in the train candidates go to the train set as combo_seen2, the rest go to the test set as combo_seen2;
+        # combo-gene perturbations with both genes in the ood genes go to the test set as combo_seen0;
+        # single-gene perturbations with genes in the ood genes go to the test set as single_unseen.
+        test_subgroups = {"combo_seen0": [], "combo_seen1": [], "combo_seen2": [], "single_unseen": []}
+        combo2_candidates = []
+        for pert in pert_names:
+            genes = pert.split("+")
+            if len(genes) == 1 or genes[0] == "ctrl" or genes[1] == "ctrl": # single-gene perturbation
+                current_gene = genes[0] if genes[0] != "ctrl" else genes[1]
+                if current_gene in train_genes_candidates:
+                    train_names.append(pert)
+                else:
+                    test_names.append(pert)
+                    test_subgroups["single_unseen"].append(pert)
+            else: # combo-gene perturbation
+                num_train_genes = sum([1 if g in train_genes_candidates else 0 for g in genes])
+                if num_train_genes == 2:
+                    combo2_candidates.append(pert)
+                elif num_train_genes == 1:
+                    test_names.append(pert)
+                    test_subgroups["combo_seen1"].append(pert)
+                else:
+                    test_names.append(pert)
+                    test_subgroups["combo_seen0"].append(pert)
+        
+        train_combo2 = np.random.choice(combo2_candidates, size=int(len(combo2_candidates)*combo_seen2_train_size), replace=False)
+        train_names.extend(train_combo2)
+
+        test_combo2 = np.setdiff1d(combo2_candidates, train_combo2)
+        test_names.extend(test_combo2)
+        test_subgroups["combo_seen2"].extend(test_combo2)
+
+        assert len(train_names) + len(test_names) == len(pert_names)
+        assert len(test_subgroups["combo_seen0"]) + len(test_subgroups["combo_seen1"]) + len(test_subgroups["combo_seen2"]) + len(test_subgroups["single_unseen"]) == len(test_names)
+
+        return train_names, test_names, test_subgroups
+
 
 class PerturbationDataset(Dataset):
 
-    def __init__(self, adata, tokenizer, num_ctrl=1):
+    def __init__(self, adata, tokenizer, split='train', num_ctrl=1):
         self.adata = adata
         self.tokenizer = tokenizer # NOTE: need to flag `filter_zero_expr_genes=False` for the perturbation task since we want to keep the zero-expression genes for prediction.
         self.gene_names = adata.var['gene_symbol'].tolist()
@@ -16,7 +150,7 @@ class PerturbationDataset(Dataset):
         
         self.X = adata.X if isinstance(adata.X, np.ndarray) else adata.X.toarray()
         
-        print(f"Original genes: {len(self.gene_names)}| Genes in vocab: {len(self.aligned_gene_ids)}")
+        print(f"PerturbationDataset - Original genes: {len(self.gene_names)}| Genes in vocab: {len(self.aligned_gene_ids)}")
 
         # fixed gene set for all cells.
         self.gene_ids = np.array([
@@ -35,7 +169,7 @@ class PerturbationDataset(Dataset):
                 sampled_ctrl_idx = self.ctrl_idx[np.random.randint(0, len(self.ctrl_idx), num_ctrl)]
                 for c_idx in sampled_ctrl_idx:
                     self.pairs.append((c_idx, idx, pert_genes))
-            else:
+            elif split == 'train': # only include ctrl-ctrl pairs in the training set.
                 self.pairs.append((idx, idx, ['ctrl']))
         
         # TODO: Do DGE analysis for each perturbation vs ctrl and save the top K DE genes for evaluation.
