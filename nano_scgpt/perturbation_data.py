@@ -142,6 +142,7 @@ class PerturbationDataset(Dataset):
         self.adata = adata
         self.tokenizer = tokenizer # NOTE: need to flag `filter_zero_expr_genes=False` for the perturbation task since we want to keep the zero-expression genes for prediction.
         self.gene_names = adata.var['gene_symbol'].tolist()
+        self.split = split
 
         self.vocab_genes_idx = [idx for idx, g in enumerate(self.gene_names) if g in self.tokenizer.vocab]
         self.aligned_gene_ids = np.array([self.tokenizer.vocab[self.gene_names[idx]] for idx in self.vocab_genes_idx]) # shape [G_vocab]
@@ -168,9 +169,9 @@ class PerturbationDataset(Dataset):
                 pert_genes = [g for g in condition.split("+") if g != "ctrl"]
                 sampled_ctrl_idx = self.ctrl_idx[np.random.randint(0, len(self.ctrl_idx), num_ctrl)]
                 for c_idx in sampled_ctrl_idx:
-                    self.pairs.append((c_idx, idx, pert_genes))
+                    self.pairs.append((c_idx, idx, pert_genes, condition))
             elif split == 'train': # only include ctrl-ctrl pairs in the training set.
-                self.pairs.append((idx, idx, ['ctrl']))
+                self.pairs.append((idx, idx, ['ctrl'], condition))
         
         # TODO: Do DGE analysis for each perturbation vs ctrl and save the top K DE genes for evaluation.
         self.perturbations = adata.obs['condition'].unique().tolist()
@@ -182,7 +183,7 @@ class PerturbationDataset(Dataset):
         return super().__str__() + f"| num_pairs: {len(self.pairs)} | num perturbations: {len(self.perturbations)}"
     
     def __getitem__(self, index):
-        ctrl_idx, pert_idx, pert_names = self.pairs[index]
+        ctrl_idx, pert_idx, pert_names, condition = self.pairs[index]
 
         # full gene set
         ctrl_exprs = self.X[ctrl_idx]            # (n_genes,)
@@ -196,16 +197,18 @@ class PerturbationDataset(Dataset):
             "gene_values":          torch.from_numpy(ctrl_exprs).float(),
             "pert_labels":          torch.from_numpy(pert_labels).long(),
             "target_values":        torch.from_numpy(pert_exprs).float(),
+            "perturbation":         condition,
         }
     
     def collate_fn(self, batch):
         gene_values  = torch.stack([item["gene_values"]   for item in batch])  # (B, n_genes)
         pert_labels  = torch.stack([item["pert_labels"]   for item in batch])
         target_values= torch.stack([item["target_values"] for item in batch])
+        perturbations = [item["perturbation"] for item in batch] # list of perturbation names in the batch, e.g. ["geneA+ctrl", "geneB+geneC", ...]
         B, n_genes   = gene_values.shape
 
-        # sample gene subset ONCE for the whole batch
-        if n_genes > self.T:
+        # sample gene subset ONCE for the whole batch, only for train. for val/test, full gene sets are returned.
+        if self.split == 'train' and n_genes > self.T:
             # ![TODO][NOTE]: this means perturbed genes may get dropped with probability (T/n_genes), which flags the whole pair as NOT perturbed but in reality it is.
             # This can be misleading for the model, and degrade fine-tuning performance on the perturbation prediction task. 
             # A potential solution is to always keep the perturbed genes and only sample from the non-perturbed genes to fill up the T tokens.
@@ -226,4 +229,5 @@ class PerturbationDataset(Dataset):
             "src_key_padding_mask": src_key_padding_mask,
             "pert_labels":          pert_labels,
             "target_values":        target_values,
+            "perturbations":        perturbations,
         }
