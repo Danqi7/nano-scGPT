@@ -1,5 +1,3 @@
-from unittest import loader
-
 import torch
 from torch.utils.data import DataLoader
 import scanpy as sc
@@ -11,6 +9,7 @@ from nano_scgpt.scGPT_tokenizer import scGPTTokenizer
 from nano_scgpt.perturbation_data import PerturbationDataSplitter, PerturbationDataset
 
 import warnings
+import argparse
 
 def compute_perturbation_metrics(preds: np.ndarray, gts: np.ndarray, pert_names:np.ndarray, ctrl_adata: sc.AnnData):
     """
@@ -185,10 +184,49 @@ def train(model, train_loader, val_loader, n_epochs=15, lr=1e-4, device='cuda', 
                 if patience >= early_stopping_patience:
                     print(f"Early stopping triggered after {epoch+1} epochs.")
                     break
+    
+def evaluate(model, test_loader, device='cuda', amp=True):
+    model = model.to(device)
+    model.eval()
+
+    ctrl_adata = test_loader.dataset.adata[test_loader.dataset.adata.obs['condition'] == 'ctrl']
+    predictions = []
+    gts = []
+    perts = []
+    with torch.no_grad():
+        for idx, batch in enumerate(test_loader):
+            gene_ids = batch["gene_ids"].to(device)
+            gene_values = batch["gene_values"].to(device)
+            src_key_padding_mask = batch["src_key_padding_mask"].to(device)
+            pert_labels = batch["pert_labels"].to(device)
+            target_values = batch["target_values"].to(device)
+
+            with torch.amp.autocast(device_type=device, enabled=amp):
+                pred = model(gene_ids, gene_values, src_key_padding_mask, pert_labels) # (B, n_genes)
+                
+                predictions.extend(pred.detach().cpu().numpy())
+                gts.extend(target_values.detach().cpu().numpy())
+                perts.extend(batch["perturbations"])
+
+        predictions = np.stack(predictions)
+        gts = np.stack(gts)
+        metrics = compute_perturbation_metrics(predictions, gts, np.array(perts), ctrl_adata)
+        print(f"Test Prediction Shape: {predictions.shape}, GT Shape: {gts.shape}, Perturbations Length: {len(perts)}")
+        for metric_name, metric_value in metrics.items():
+            print(f"{metric_name}: {metric_value:.4f}")
 
 
 if __name__ == "__main__":
-    batch_size = 8
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--mode", type=str, default="train", choices=["train", "eval"], help="Whether to train the model or evaluate the best saved model on the test set.")
+    parser.add_argument("--batch_size", type=int, default=64, help="Batch size for training and evaluation.")
+    parser.add_argument("--n_epochs", type=int, default=15, help="Number of training epochs.")
+    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate for the optimizer.")
+    parser.add_argument("--amp", action='store_true', help="Whether to use automatic mixed precision (AMP) for training.")
+    parser.add_argument("--early_stopping_patience", type=int, default=5, help="Number of epochs to wait for improvement before early stopping.")
+    args = parser.parse_args()
+
+    batch_size = args.batch_size
     model = scGPTForPerturbationResponsePrediction.from_pretrained("scGPT_human")
 
     # TODO: filter out perturbation genes in the go.cvs for GEAR like dataset?
@@ -211,6 +249,13 @@ if __name__ == "__main__":
     if torch.backends.mps.is_available():
         device = 'mps'
 
-    train(model, train_loader, val_loader, n_epochs=15, lr=1e-4, device=device, amp=True, early_stopping_patience=5)
+    if args.mode == "train":
+        train(model, train_loader, val_loader, n_epochs=args.n_epochs, lr=args.lr, device=device, amp=args.amp, early_stopping_patience=args.early_stopping_patience)
+
+    # Load the best saved model and evaluate on the test set.
+    model.load_state_dict(torch.load("best_model.pt", map_location=device))
+    evaluate(model, test_loader, device=device, amp=args.amp)
+
+    print("Done.")
 
 
