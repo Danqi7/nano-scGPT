@@ -278,18 +278,25 @@ class AffineExprDecoder(nn.Module):
         
         super().__init__()
 
-        self.decoder = nn.Sequential(
+        self.coeff_decoder = nn.Sequential(
             nn.Linear(d_model, d_model),
             nn.LeakyReLU(),
             nn.Linear(d_model, d_model),
             nn.LeakyReLU(),
-            nn.Linear(d_model, 2), # outputting coeff and bias for each gene
+            nn.Linear(d_model, 1),
+        )
+
+        self.bias_decoder = nn.Sequential(
+            nn.Linear(d_model, d_model),
+            nn.LeakyReLU(),
+            nn.Linear(d_model, d_model),
+            nn.LeakyReLU(),
+            nn.Linear(d_model, 1),
         )
 
     def forward(self, x: torch.Tensor, values: torch.Tensor) -> torch.Tensor:
-        coeff_bias = self.decoder(x) # [B, T, 2]
-        coeff = coeff_bias[..., 0] # [B, T]
-        bias = coeff_bias[..., 1] # [B, T]
+        coeff = self.coeff_decoder(x).squeeze(-1) # [B, T]
+        bias = self.bias_decoder(x).squeeze(-1) # [B, T]
 
         pred = coeff * values + bias
         return pred

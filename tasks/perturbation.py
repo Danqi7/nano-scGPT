@@ -224,18 +224,20 @@ if __name__ == "__main__":
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate for the optimizer.")
     parser.add_argument("--amp", action='store_true', help="Whether to use automatic mixed precision (AMP) for training.")
     parser.add_argument("--early_stopping_patience", type=int, default=5, help="Number of epochs to wait for improvement before early stopping.")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility.")
+    parser.add_argument("--data", default="adamson", type=str, help="Dataset to use for training and evaluation.")
     args = parser.parse_args()
 
     batch_size = args.batch_size
     model = scGPTForPerturbationResponsePrediction.from_pretrained("scGPT_human")
 
     # TODO: filter out perturbation genes in the go.cvs for GEAR like dataset?
-    adata = sc.read_h5ad("../data/norman/perturb_processed.h5ad")
+    adata = sc.read_h5ad(f"../data/{args.data}/perturb_processed.h5ad")
     adata.var['gene_symbol'] = adata.var['gene_name']
 
     tokenizer = scGPTTokenizer.from_pretrained("scGPT_human")
     tokenizer.max_length = 1536
-    data_splitter = PerturbationDataSplitter(adata, tokenizer)
+    data_splitter = PerturbationDataSplitter(adata, tokenizer, seed=args.seed)
     train_adata, val_adata, test_adata = data_splitter.get_train_val_test()
 
     train_dataset = PerturbationDataset(train_adata, tokenizer, split='train')
