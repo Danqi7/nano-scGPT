@@ -155,7 +155,7 @@ class PerturbationDataset(Dataset):
 
         # fixed gene set for all cells.
         self.gene_ids = np.array([
-            self.tokenizer.vocab.get(g, 0)   # OOV → 0 (pad)
+            self.tokenizer.vocab.get(g, self.tokenizer.vocab.get("<pad>"))   # OOV → <pad> token id
             for g in self.gene_names
         ])
         

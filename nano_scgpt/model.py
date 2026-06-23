@@ -134,7 +134,7 @@ class scGPTGeneEncoder(nn.Module):
         super().__init__()
         vocab_size = config.vocab_size
         n_embd = config.n_embd
-        padding_idx = config.pad_value
+        padding_idx = config.pad_token_id
 
         self.embedding = nn.Embedding(
             vocab_size, n_embd, padding_idx=padding_idx
@@ -177,7 +177,7 @@ class scGPTModel(nn.Module):
 
         self.encoder = scGPTGeneEncoder(config)
         self.value_encoder = scGPTContinuousValueEncoder(config) # TODO: support categorical/scaling value encoders as well.
-        self.pert_encoder = nn.Embedding(3, config.n_embd, padding_idx=2)
+        self.pert_encoder = nn.Embedding(3, config.n_embd, padding_idx=0) # TODO: double check cuz 0 means unperturbed.
 
         self.transformer_encoder = nn.ModuleDict(dict(
             layers = nn.ModuleList([scGPTBlock(config) for _ in range(config.n_layer)]),
