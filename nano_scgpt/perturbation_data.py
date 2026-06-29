@@ -138,7 +138,7 @@ class PerturbationDataSplitter:
 
 class PerturbationDataset(Dataset):
 
-    def __init__(self, adata, tokenizer, split='train', num_ctrl=1):
+    def __init__(self, adata, tokenizer, split='train', num_ctrl=1, use_perturbed_genes=False):
         self.adata = adata
         self.tokenizer = tokenizer # NOTE: need to flag `filter_zero_expr_genes=False` for the perturbation task since we want to keep the zero-expression genes for prediction.
         self.gene_names = adata.var['gene_symbol'].tolist()
@@ -212,7 +212,21 @@ class PerturbationDataset(Dataset):
             # ![TODO][NOTE]: this means perturbed genes may get dropped with probability (T/n_genes), which flags the whole pair as NOT perturbed but in reality it is.
             # This can be misleading for the model, and degrade fine-tuning performance on the perturbation prediction task. 
             # A potential solution is to always keep the perturbed genes and only sample from the non-perturbed genes to fill up the T tokens.
-            idx = torch.randperm(n_genes)[:self.T]
+            
+            if self.keep_perturbed_genes: # fixed version
+                # always keep genes perturbed anywhere in the batch; sample the rest
+                pert_idx     = torch.where((pert_labels > 0).any(dim=0))[0]   # (n_perturbed_in_batch,)
+                non_pert_idx = torch.where((pert_labels > 0).any(dim=0) == False)[0]
+
+                num_non_pert_to_sample = self.T - len(pert_idx)
+                if num_non_pert_to_sample > 0:
+                    sampled = non_pert_idx[torch.randperm(len(non_pert_idx))[:num_non_pert_to_sample]]
+                    idx = torch.cat([pert_idx, sampled])
+                else:
+                    idx = pert_idx[:self.T]   # more perturbed genes than T (rare) → truncate
+            else: # og scgpt version
+                idx = torch.randperm(n_genes)[:self.T]
+
             gene_values   = gene_values[:, idx]
             pert_labels   = pert_labels[:, idx]
             target_values = target_values[:, idx]
