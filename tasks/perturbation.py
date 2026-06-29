@@ -3,6 +3,7 @@ from torch.utils.data import DataLoader
 import scanpy as sc
 import numpy as np
 from scipy.stats import pearsonr
+from sklearn.metrics import pairwise_distances, pdist
 
 from nano_scgpt.model import scGPTForPerturbationResponsePrediction
 from nano_scgpt.scGPT_tokenizer import scGPTTokenizer
@@ -43,13 +44,13 @@ def compute_perturbation_metrics(preds: np.ndarray, gts: np.ndarray, pert_names:
     preds_delta_by_pert = preds_by_pert - mean_ctrl # [n_perts, n_genes]
     gts_delta_by_pert = gts_by_pert - mean_ctrl # [n_perts, n_genes]
 
-    # Pearson correlation across genes, averaged across perturbations.
-    valid = gts_by_pert.sum(axis=1) != 0
+    # 1. Pearson correlation across genes, averaged across perturbations.
+    zero_rows = np.all(gts_by_pert == 0, axis=1)   # bool mask for rows where all gene expressions are zero
+    valid = ~zero_rows
     for x, y in zip(preds_by_pert[valid], gts_by_pert[valid]):
         metrics_across_genes["pearson"].append(pearsonr(x, y)[0]) # [n_perts]
     
-    # Pearson correlation across genes for delta expression, averaged across perturbations.
-    valid = gts_delta_by_pert.sum(axis=1) != 0
+    # 2. Pearson correlation across genes for delta expression, averaged across perturbations.
     for x, y in zip(preds_delta_by_pert[valid], gts_delta_by_pert[valid]):
         # import pdb; pdb.set_trace()
         metrics_across_genes["pearson_delta"].append(pearsonr(x, y)[0]) # [n_perts]
@@ -72,15 +73,20 @@ def compute_perturbation_metrics(preds: np.ndarray, gts: np.ndarray, pert_names:
     preds_delta_by_pert_de = preds_by_pert_de - mean_ctrl_de # [n_perts, top_n]
     gts_delta_by_pert_de = gts_by_pert_de - mean_ctrl_de # [n_perts, top_n]
 
-    # Pearson correlation across DE genes.
-    valid = gts_by_pert_de.sum(axis=1) != 0
+    # 3. Pearson correlation across DE genes.
     for x, y in zip(preds_by_pert_de[valid], gts_by_pert_de[valid]):
         metrics_across_genes["pearson_de"].append(pearsonr(x, y)[0]) # [n_perts]
     
-    # Pearson correlation across DE genes for delta expression.
-    valid = gts_delta_by_pert_de.sum(axis=1) != 0
+    # 4. Pearson correlation across DE genes for delta expression.
     for x, y in zip(preds_delta_by_pert_de[valid], gts_delta_by_pert_de[valid]):
         metrics_across_genes["pearson_de_delta"].append(pearsonr(x, y)[0]) # [n_perts]
+
+    # 5. Compute correlation on ground truth perturbation distances vs predicted perturbation distances.
+    # Compute pairwise distances between perturbations based on their mean expression profiles.
+    gt_distances = pdist(gts_by_pert, metric='euclidean') # [n_perts * (n_perts - 1) / 2]
+    pred_distances = pdist(preds_by_pert, metric='euclidean') # [n_perts * (n_perts - 1) / 2]
+    # Flatten the distance matrices and compute Pearson correlation between them.
+    metrics_across_genes["pearson_perturbation_distance"] = pearsonr(gt_distances, pred_distances)[0]
 
 
     metrics_across_genes = {k: np.mean(v) for k, v in metrics_across_genes.items()}
@@ -97,6 +103,7 @@ def train(model, train_loader, val_loader, n_epochs=15, lr=1e-4, device='cuda', 
     scaler    = torch.amp.GradScaler(enabled=amp)
 
     patience = 0
+    best_val_metric = -float('inf')
     for epoch in range(n_epochs):
         model.train()
         train_loss = 0.0
@@ -114,6 +121,7 @@ def train(model, train_loader, val_loader, n_epochs=15, lr=1e-4, device='cuda', 
 
             optimizer.zero_grad()
             scaler.scale(loss).backward()
+            scaler.unscale_(optimizer) # has to explicitly unscale before clipping gradients.
             with warnings.catch_warnings(record=True) as w:
                 warnings.filterwarnings("always")
                 norm = torch.nn.utils.clip_grad_norm_(
@@ -133,57 +141,24 @@ def train(model, train_loader, val_loader, n_epochs=15, lr=1e-4, device='cuda', 
             train_loss += loss.item()
             print(f"Epoch {epoch+1}/{n_epochs}, Step {idx+1} | Loss: {loss.item():.4f} | LR: {scheduler.get_last_lr()[0]:.4f} | Scaler: {scaler.get_scale()} | Norm: {norm:.4f}")
 
-            # break;
-
         scheduler.step()
     
         # Evaluation.
-        model.eval()
-        ctrl_adata = val_loader.dataset.adata[val_loader.dataset.adata.obs['condition'] == 'ctrl']
-        predictions = []
-        gts = []
-        perts = []
-        best_val_metric = -float('inf')
-        with torch.no_grad():
-            val_loss = 0.0
-            for idx, batch in enumerate(val_loader):
-                gene_ids = batch["gene_ids"].to(device)
-                gene_values = batch["gene_values"].to(device)
-                src_key_padding_mask = batch["src_key_padding_mask"].to(device)
-                pert_labels = batch["pert_labels"].to(device)
-                target_values = batch["target_values"].to(device)
-
-                with torch.amp.autocast(device_type=device, enabled=amp):
-                    pred = model(gene_ids, gene_values, src_key_padding_mask, pert_labels) # (B, n_genes)
-                    loss = torch.nn.functional.mse_loss(pred, target_values, reduction='mean')
-                    
-                    predictions.extend(pred.detach().cpu().numpy())
-                    gts.extend(target_values.detach().cpu().numpy())
-                    perts.extend(batch["perturbations"])
-                
-                val_loss += loss.item()
-
-                # if idx > 2:
-                #     break;
-
-            val_loss /= len(val_loader)
-            predictions = np.stack(predictions)
-            gts = np.stack(gts)
-            metrics = compute_perturbation_metrics(predictions, gts, np.array(perts), ctrl_adata)
-            print(f"Epoch {epoch+1}, Val Loss: {val_loss}, Prediction Shape: {predictions.shape}, GT Shape: {gts.shape}, Perturbations Length: {len(perts)}")
-            for metric_name, metric_value in metrics.items():
-                print(f"{metric_name}: {metric_value:.4f}")
-            
-            # Early stopping based on pearson correlation across genes.
-            if metrics["pearson"] > best_val_metric:
-                best_val_metric = metrics["pearson"]
-                torch.save(model.state_dict(), "best_model.pt")
-                print(f"New best model saved with {metric_name}: {metric_value:.4f}")
-            else:
-                patience += 1
-                if patience >= early_stopping_patience:
-                    print(f"Early stopping triggered after {epoch+1} epochs.")
-                    break
+        metrics = evaluate(model, val_loader, device=device, amp=amp)
+        for metric_name, metric_value in metrics.items():
+            print(f"{metric_name}: {metric_value:.4f}")
+        
+        # Early stopping based on pearson correlation across genes.
+        # !NOTE: can also use pearson delta instead.
+        if metrics["pearson"] > best_val_metric:
+            best_val_metric = metrics["pearson"]
+            torch.save(model.state_dict(), "best_model.pt")
+            print(f"New best model saved with {metric_name}: {metric_value:.4f}")
+        else:
+            patience += 1
+            if patience >= early_stopping_patience:
+                print(f"Early stopping triggered after {epoch+1} epochs.")
+                break
     
 def evaluate(model, test_loader, device='cuda', amp=True):
     model = model.to(device)
@@ -214,7 +189,8 @@ def evaluate(model, test_loader, device='cuda', amp=True):
         print(f"Test Prediction Shape: {predictions.shape}, GT Shape: {gts.shape}, Perturbations Length: {len(perts)}")
         for metric_name, metric_value in metrics.items():
             print(f"{metric_name}: {metric_value:.4f}")
-
+    
+    return metrics
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -256,6 +232,9 @@ if __name__ == "__main__":
 
     # Load the best saved model and evaluate on the test set.
     model.load_state_dict(torch.load("best_model.pt", map_location=device))
+    print("val perturbations:", sorted(val_dataset.adata.obs['condition'].unique().tolist()))
+    print("test perturbations:", sorted(test_dataset.adata.obs['condition'].unique().tolist()))
+
     evaluate(model, test_loader, device=device, amp=args.amp)
 
     print("Done.")
