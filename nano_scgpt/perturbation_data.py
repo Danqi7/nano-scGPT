@@ -123,6 +123,8 @@ class PerturbationDataSplitter:
                     test_names.append(pert)
                     test_subgroups["combo_seen0"].append(pert)
         
+        combo2_candidates = sorted(combo2_candidates) # to match with GEAR's split for reproducibility.
+        np.random.seed(seed)
         train_combo2 = np.random.choice(combo2_candidates, size=int(len(combo2_candidates)*combo_seen2_train_size), replace=False)
         train_names.extend(train_combo2)
 
@@ -138,11 +140,13 @@ class PerturbationDataSplitter:
 
 class PerturbationDataset(Dataset):
 
-    def __init__(self, adata, tokenizer, split='train', num_ctrl=1, use_perturbed_genes=False):
+    def __init__(self, adata, tokenizer, split='train', num_ctrl=1, keep_perturbed_genes=False):
         self.adata = adata
         self.tokenizer = tokenizer # NOTE: need to flag `filter_zero_expr_genes=False` for the perturbation task since we want to keep the zero-expression genes for prediction.
         self.gene_names = adata.var['gene_symbol'].tolist()
         self.split = split
+        self.num_ctrl = num_ctrl
+        self.keep_perturbed_genes = keep_perturbed_genes
 
         self.vocab_genes_idx = [idx for idx, g in enumerate(self.gene_names) if g in self.tokenizer.vocab]
         self.aligned_gene_ids = np.array([self.tokenizer.vocab[self.gene_names[idx]] for idx in self.vocab_genes_idx]) # shape [G_vocab]
@@ -167,7 +171,7 @@ class PerturbationDataset(Dataset):
             condition = row.condition
             if condition != 'ctrl':
                 pert_genes = [g for g in condition.split("+") if g != "ctrl"]
-                sampled_ctrl_idx = self.ctrl_idx[np.random.randint(0, len(self.ctrl_idx), num_ctrl)]
+                sampled_ctrl_idx = self.ctrl_idx[np.random.randint(0, len(self.ctrl_idx), self.num_ctrl)]
                 for c_idx in sampled_ctrl_idx:
                     self.pairs.append((c_idx, idx, pert_genes, condition))
             elif split == 'train': # only include ctrl-ctrl pairs in the training set.

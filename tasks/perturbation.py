@@ -3,14 +3,22 @@ from torch.utils.data import DataLoader
 import scanpy as sc
 import numpy as np
 from scipy.stats import pearsonr
-from sklearn.metrics import pairwise_distances, pdist
+from scipy.spatial.distance import pdist
 
 from nano_scgpt.model import scGPTForPerturbationResponsePrediction
 from nano_scgpt.scGPT_tokenizer import scGPTTokenizer
 from nano_scgpt.perturbation_data import PerturbationDataSplitter, PerturbationDataset
 
+import os
 import warnings
 import argparse
+import logging
+
+def log(message, logger=None):
+    if logger:
+        logger.info(message)
+    else:
+        print(message)
 
 def compute_perturbation_metrics(preds: np.ndarray, gts: np.ndarray, pert_names:np.ndarray, ctrl_adata: sc.AnnData):
     """
@@ -95,9 +103,7 @@ def compute_perturbation_metrics(preds: np.ndarray, gts: np.ndarray, pert_names:
 
 
 
-def train(model, train_loader, val_loader, n_epochs=15, lr=1e-4, device='cuda', amp=True, early_stopping_patience=5):
-    model = model.to(device)
-
+def train(model, train_loader, val_loader, n_epochs=15, lr=1e-4, device='cuda', amp=True, early_stopping_patience=5, save_dir="./", logger=None):
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.9)
     scaler    = torch.amp.GradScaler(enabled=amp)
@@ -139,29 +145,28 @@ def train(model, train_loader, val_loader, n_epochs=15, lr=1e-4, device='cuda', 
             scaler.update()
 
             train_loss += loss.item()
-            print(f"Epoch {epoch+1}/{n_epochs}, Step {idx+1} | Loss: {loss.item():.4f} | LR: {scheduler.get_last_lr()[0]:.4f} | Scaler: {scaler.get_scale()} | Norm: {norm:.4f}")
+            if epoch == 0 or epoch > 0 and idx % 100 == 0:
+                log(f"Epoch {epoch+1}/{n_epochs}, Step {idx+1} | Loss: {loss.item():.4f} | LR: {scheduler.get_last_lr()[0]:.4f} | Scaler: {scaler.get_scale()} | Norm: {norm:.4f}", logger)
 
         scheduler.step()
     
         # Evaluation.
-        metrics = evaluate(model, val_loader, device=device, amp=amp)
-        for metric_name, metric_value in metrics.items():
-            print(f"{metric_name}: {metric_value:.4f}")
-        
+        metrics = evaluate(model, val_loader, device=device, amp=amp, logger=logger)
+
         # Early stopping based on pearson correlation across genes.
         # !NOTE: can also use pearson delta instead.
-        if metrics["pearson"] > best_val_metric:
-            best_val_metric = metrics["pearson"]
-            torch.save(model.state_dict(), "best_model.pt")
-            print(f"New best model saved with {metric_name}: {metric_value:.4f}")
+        metric_name = "pearson"
+        if metrics[metric_name] > best_val_metric:
+            best_val_metric = metrics[metric_name]
+            torch.save(model.state_dict(), f"{save_dir}/best_model.pt")
+            log(f"New best model saved with {metric_name}: {best_val_metric:.4f}", logger)
         else:
             patience += 1
             if patience >= early_stopping_patience:
-                print(f"Early stopping triggered after {epoch+1} epochs.")
+                log(f"Early stopping triggered after {epoch+1} epochs.", logger)
                 break
     
-def evaluate(model, test_loader, device='cuda', amp=True):
-    model = model.to(device)
+def evaluate(model, test_loader, device='cuda', amp=True, logger=None):
     model.eval()
 
     ctrl_adata = test_loader.dataset.adata[test_loader.dataset.adata.obs['condition'] == 'ctrl']
@@ -186,9 +191,8 @@ def evaluate(model, test_loader, device='cuda', amp=True):
         predictions = np.stack(predictions)
         gts = np.stack(gts)
         metrics = compute_perturbation_metrics(predictions, gts, np.array(perts), ctrl_adata)
-        print(f"Test Prediction Shape: {predictions.shape}, GT Shape: {gts.shape}, Perturbations Length: {len(perts)}")
-        for metric_name, metric_value in metrics.items():
-            print(f"{metric_name}: {metric_value:.4f}")
+        log(f"Test Prediction Shape: {predictions.shape}, GT Shape: {gts.shape}, Perturbations Length: {len(perts)}", logger)
+        log(f"Eval | " + " | ".join(f"{k}={v:.4f}" for k, v in metrics.items()), logger)
     
     return metrics
 
@@ -202,6 +206,8 @@ if __name__ == "__main__":
     parser.add_argument("--early_stopping_patience", type=int, default=5, help="Number of epochs to wait for improvement before early stopping.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility.")
     parser.add_argument("--data", default="adamson", type=str, help="Dataset to use for training and evaluation.")
+    parser.add_argument("--keep_perturbed_genes", action='store_true', help="Whether to keep perturbed genes in the input data. OG scGPT default to False.")
+    parser.add_argument("--log", action='store_true', help="Whether to log the training and evaluation process to a file.")
     args = parser.parse_args()
 
     batch_size = args.batch_size
@@ -216,9 +222,9 @@ if __name__ == "__main__":
     data_splitter = PerturbationDataSplitter(adata, tokenizer, seed=args.seed)
     train_adata, val_adata, test_adata = data_splitter.get_train_val_test()
 
-    train_dataset = PerturbationDataset(train_adata, tokenizer, split='train')
-    test_dataset = PerturbationDataset(test_adata, tokenizer, split='test')
-    val_dataset = PerturbationDataset(val_adata, tokenizer, split='val')
+    train_dataset = PerturbationDataset(train_adata, tokenizer, split='train', keep_perturbed_genes=args.keep_perturbed_genes)
+    test_dataset = PerturbationDataset(test_adata, tokenizer, split='test', keep_perturbed_genes=args.keep_perturbed_genes)
+    val_dataset = PerturbationDataset(val_adata, tokenizer, split='val', keep_perturbed_genes=args.keep_perturbed_genes)
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=train_dataset.collate_fn)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, collate_fn=test_dataset.collate_fn)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, collate_fn=val_dataset.collate_fn)
@@ -226,17 +232,32 @@ if __name__ == "__main__":
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     if torch.backends.mps.is_available():
         device = 'mps'
+    
+    model = model.to(device)
+
+    os.makedirs(f"./results/{args.data}", exist_ok=True)
+    save_dir = f"./results/{args.data}/keep_{args.keep_perturbed_genes}_seed_{args.seed}"
+    os.makedirs(save_dir, exist_ok=True)
+
+    logger = None
+    if args.log:
+        logging.basicConfig(
+            filename=f"{save_dir}/run.log",
+            level=logging.INFO,
+            format="%(asctime)s | %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+        logger = logging.getLogger(__name__)
+        log(f"Arguments: {args}", logger)
 
     if args.mode == "train":
-        train(model, train_loader, val_loader, n_epochs=args.n_epochs, lr=args.lr, device=device, amp=args.amp, early_stopping_patience=args.early_stopping_patience)
+        train(model, train_loader, val_loader, n_epochs=args.n_epochs, lr=args.lr, 
+            device=device, amp=args.amp, early_stopping_patience=args.early_stopping_patience, 
+            save_dir=save_dir, logger=logger)
 
     # Load the best saved model and evaluate on the test set.
-    model.load_state_dict(torch.load("best_model.pt", map_location=device))
-    print("val perturbations:", sorted(val_dataset.adata.obs['condition'].unique().tolist()))
-    print("test perturbations:", sorted(test_dataset.adata.obs['condition'].unique().tolist()))
+    model.load_state_dict(torch.load(f"{save_dir}/best_model.pt", map_location=device))
+    evaluate(model, test_loader, device=device, amp=args.amp, logger=logger)
 
-    evaluate(model, test_loader, device=device, amp=args.amp)
-
-    print("Done.")
-
+    log("Done.", logger)
 
