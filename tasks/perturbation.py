@@ -2,7 +2,7 @@ import torch
 from torch.utils.data import DataLoader
 import scanpy as sc
 import numpy as np
-from scipy.stats import pearsonr
+from scipy.stats import pearsonr, spearmanr
 from scipy.spatial.distance import pdist
 
 from nano_scgpt.model import scGPTForPerturbationResponsePrediction
@@ -10,9 +10,18 @@ from nano_scgpt.scGPT_tokenizer import scGPTTokenizer
 from nano_scgpt.perturbation_data import PerturbationDataSplitter, PerturbationDataset
 
 import os
+import random
 import warnings
 import argparse
 import logging
+
+def _set_seed(seed):
+    """set random seed."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 def log(message, logger=None):
     if logger:
@@ -60,7 +69,6 @@ def compute_perturbation_metrics(preds: np.ndarray, gts: np.ndarray, pert_names:
     
     # 2. Pearson correlation across genes for delta expression, averaged across perturbations.
     for x, y in zip(preds_delta_by_pert[valid], gts_delta_by_pert[valid]):
-        # import pdb; pdb.set_trace()
         metrics_across_genes["pearson_delta"].append(pearsonr(x, y)[0]) # [n_perts]
     
     # Differential expression (DE) gene.
@@ -82,11 +90,13 @@ def compute_perturbation_metrics(preds: np.ndarray, gts: np.ndarray, pert_names:
     gts_delta_by_pert_de = gts_by_pert_de - mean_ctrl_de # [n_perts, top_n]
 
     # 3. Pearson correlation across DE genes.
-    for x, y in zip(preds_by_pert_de[valid], gts_by_pert_de[valid]):
+    zero_rows_de = np.all(gts_by_pert_de == 0, axis=1)   # bool mask for rows where all DE gene expressions are zero
+    valid_de = ~zero_rows_de
+    for x, y in zip(preds_by_pert_de[valid_de], gts_by_pert_de[valid_de]):
         metrics_across_genes["pearson_de"].append(pearsonr(x, y)[0]) # [n_perts]
     
     # 4. Pearson correlation across DE genes for delta expression.
-    for x, y in zip(preds_delta_by_pert_de[valid], gts_delta_by_pert_de[valid]):
+    for x, y in zip(preds_delta_by_pert_de[valid_de], gts_delta_by_pert_de[valid_de]):
         metrics_across_genes["pearson_de_delta"].append(pearsonr(x, y)[0]) # [n_perts]
 
     # 5. Compute correlation on ground truth perturbation distances vs predicted perturbation distances.
@@ -95,6 +105,7 @@ def compute_perturbation_metrics(preds: np.ndarray, gts: np.ndarray, pert_names:
     pred_distances = pdist(preds_by_pert, metric='euclidean') # [n_perts * (n_perts - 1) / 2]
     # Flatten the distance matrices and compute Pearson correlation between them.
     metrics_across_genes["pearson_perturbation_distance"] = pearsonr(gt_distances, pred_distances)[0]
+    metrics_across_genes["spearman_perturbation_distance"] = spearmanr(gt_distances, pred_distances)[0]
 
 
     metrics_across_genes = {k: np.mean(v) for k, v in metrics_across_genes.items()}
@@ -103,9 +114,9 @@ def compute_perturbation_metrics(preds: np.ndarray, gts: np.ndarray, pert_names:
 
 
 
-def train(model, train_loader, val_loader, n_epochs=15, lr=1e-4, device='cuda', amp=True, early_stopping_patience=5, save_dir="./", logger=None):
+def train(model, train_loader, val_loader, n_epochs=15, lr=1e-4, step_size=1, device='cuda', amp=True, early_stopping_patience=10, save_dir="./", logger=None):
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.9)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=step_size, gamma=0.9)
     scaler    = torch.amp.GradScaler(enabled=amp)
 
     patience = 0
@@ -202,19 +213,23 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=64, help="Batch size for training and evaluation.")
     parser.add_argument("--n_epochs", type=int, default=15, help="Number of training epochs.")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate for the optimizer.")
-    parser.add_argument("--amp", action='store_true', help="Whether to use automatic mixed precision (AMP) for training.")
-    parser.add_argument("--early_stopping_patience", type=int, default=5, help="Number of epochs to wait for improvement before early stopping.")
+    parser.add_argument("--scheduler_step_size", type=int, default=1, help="Step size for the learning rate scheduler.")
+    parser.add_argument("--no_amp", action='store_true', help="Whether to disable automatic mixed precision (AMP) for training.")
+    parser.add_argument("--early_stopping_patience", type=int, default=10, help="Number of epochs to wait for improvement before early stopping.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility.")
     parser.add_argument("--data", default="adamson", type=str, help="Dataset to use for training and evaluation.")
     parser.add_argument("--keep_perturbed_genes", action='store_true', help="Whether to keep perturbed genes in the input data. OG scGPT default to False.")
+    parser.add_argument("--keep_genes_per_cell", action='store_true', help="Whether to keep genes per cell in the input data. OG scGPT default to False.")
     parser.add_argument("--log", action='store_true', help="Whether to log the training and evaluation process to a file.")
     args = parser.parse_args()
+
+    _set_seed(args.seed)
 
     batch_size = args.batch_size
     model = scGPTForPerturbationResponsePrediction.from_pretrained("scGPT_human")
 
     # TODO: filter out perturbation genes in the go.cvs for GEAR like dataset?
-    adata = sc.read_h5ad(f"../data/{args.data}/perturb_processed.h5ad")
+    adata = sc.read_h5ad(f"./data/{args.data}/perturb_processed.h5ad")
     adata.var['gene_symbol'] = adata.var['gene_name']
 
     tokenizer = scGPTTokenizer.from_pretrained("scGPT_human")
@@ -222,9 +237,9 @@ if __name__ == "__main__":
     data_splitter = PerturbationDataSplitter(adata, tokenizer, seed=args.seed)
     train_adata, val_adata, test_adata = data_splitter.get_train_val_test()
 
-    train_dataset = PerturbationDataset(train_adata, tokenizer, split='train', keep_perturbed_genes=args.keep_perturbed_genes)
-    test_dataset = PerturbationDataset(test_adata, tokenizer, split='test', keep_perturbed_genes=args.keep_perturbed_genes)
-    val_dataset = PerturbationDataset(val_adata, tokenizer, split='val', keep_perturbed_genes=args.keep_perturbed_genes)
+    train_dataset = PerturbationDataset(train_adata, tokenizer, split='train', keep_perturbed_genes=args.keep_perturbed_genes, keep_genes_per_cell=args.keep_genes_per_cell)
+    test_dataset = PerturbationDataset(test_adata, tokenizer, split='test', keep_perturbed_genes=args.keep_perturbed_genes, keep_genes_per_cell=args.keep_genes_per_cell)
+    val_dataset = PerturbationDataset(val_adata, tokenizer, split='val', keep_perturbed_genes=args.keep_perturbed_genes, keep_genes_per_cell=args.keep_genes_per_cell)
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=train_dataset.collate_fn)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, collate_fn=test_dataset.collate_fn)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, collate_fn=val_dataset.collate_fn)
@@ -236,7 +251,7 @@ if __name__ == "__main__":
     model = model.to(device)
 
     os.makedirs(f"./results/{args.data}", exist_ok=True)
-    save_dir = f"./results/{args.data}/keep_{args.keep_perturbed_genes}_seed_{args.seed}"
+    save_dir = f"./results/{args.data}/keep_{args.keep_perturbed_genes}_keep_genes_per_cell_{args.keep_genes_per_cell}_seed_{args.seed}"
     os.makedirs(save_dir, exist_ok=True)
 
     logger = None
@@ -249,15 +264,23 @@ if __name__ == "__main__":
         )
         logger = logging.getLogger(__name__)
         log(f"Arguments: {args}", logger)
+    
+    # Log the perturbations in train, val, and test sets.
+    log(f"Train Perturbations: {sorted(data_splitter.train_pert_names)}", logger)
+    log(f"Validation Perturbations: {sorted(data_splitter.val_pert_names)}", logger)
+    log(f"Test Perturbations: {sorted(data_splitter.test_pert_names)}", logger)
+    log(f"Train data size: {len(train_loader.dataset)}", logger)
+    log(f"Val data size: {len(val_loader.dataset)}", logger)
+    log(f"Test data size: {len(test_loader.dataset)}", logger)
 
     if args.mode == "train":
-        train(model, train_loader, val_loader, n_epochs=args.n_epochs, lr=args.lr, 
-            device=device, amp=args.amp, early_stopping_patience=args.early_stopping_patience, 
+        train(model, train_loader, val_loader, n_epochs=args.n_epochs, lr=args.lr, step_size=args.scheduler_step_size,
+            device=device, amp=not args.no_amp, early_stopping_patience=args.early_stopping_patience, 
             save_dir=save_dir, logger=logger)
 
     # Load the best saved model and evaluate on the test set.
     model.load_state_dict(torch.load(f"{save_dir}/best_model.pt", map_location=device))
-    evaluate(model, test_loader, device=device, amp=args.amp, logger=logger)
+    evaluate(model, test_loader, device=device, amp=not args.no_amp, logger=logger)
 
     log("Done.", logger)
 

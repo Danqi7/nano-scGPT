@@ -140,14 +140,15 @@ class PerturbationDataSplitter:
 
 class PerturbationDataset(Dataset):
 
-    def __init__(self, adata, tokenizer, split='train', num_ctrl=1, keep_perturbed_genes=False):
+    def __init__(self, adata, tokenizer, split='train', num_ctrl=1, keep_perturbed_genes=False, keep_genes_per_cell=False):
         self.adata = adata
         self.tokenizer = tokenizer # NOTE: need to flag `filter_zero_expr_genes=False` for the perturbation task since we want to keep the zero-expression genes for prediction.
         self.gene_names = adata.var['gene_symbol'].tolist()
         self.split = split
         self.num_ctrl = num_ctrl
         self.keep_perturbed_genes = keep_perturbed_genes
-
+        self.keep_genes_per_cell = keep_genes_per_cell
+        
         self.vocab_genes_idx = [idx for idx, g in enumerate(self.gene_names) if g in self.tokenizer.vocab]
         self.aligned_gene_ids = np.array([self.tokenizer.vocab[self.gene_names[idx]] for idx in self.vocab_genes_idx]) # shape [G_vocab]
         if len(self.aligned_gene_ids) == 0:
@@ -217,7 +218,7 @@ class PerturbationDataset(Dataset):
             # This can be misleading for the model, and degrade fine-tuning performance on the perturbation prediction task. 
             # A potential solution is to always keep the perturbed genes and only sample from the non-perturbed genes to fill up the T tokens.
             
-            if self.keep_perturbed_genes: # fixed version
+            if self.keep_perturbed_genes: # always keep perturbed genes in a batch;
                 # always keep genes perturbed anywhere in the batch; sample the rest
                 pert_idx     = torch.where((pert_labels > 0).any(dim=0))[0]   # (n_perturbed_in_batch,)
                 non_pert_idx = torch.where((pert_labels > 0).any(dim=0) == False)[0]
@@ -228,13 +229,39 @@ class PerturbationDataset(Dataset):
                     idx = torch.cat([pert_idx, sampled])
                 else:
                     idx = pert_idx[:self.T]   # more perturbed genes than T (rare) → truncate
+                
+                gene_values   = gene_values[:, idx]
+                pert_labels   = pert_labels[:, idx]
+                target_values = target_values[:, idx]
+                gene_ids      = torch.from_numpy(self.gene_ids[idx]).long().unsqueeze(0).repeat(B, 1)
+            elif self.keep_genes_per_cell: # always keep perturbed genes for each cell.
+                # per-example: keep this example's perturbed gene(s), sample the rest from its own non-perturbed genes
+                idx_list = []
+                for b in range(B):
+                    pert_idx_b = torch.where(pert_labels[b] > 0)[0]
+                    non_pert_idx_b = torch.where(pert_labels[b] == 0)[0]
+
+                    num_non_pert_to_sample = self.T - len(pert_idx_b)
+                    if num_non_pert_to_sample > 0:
+                        sampled = non_pert_idx_b[torch.randperm(len(non_pert_idx_b))[:num_non_pert_to_sample]]
+                        idx_b = torch.cat([pert_idx_b, sampled])
+                    else:
+                        idx_b = pert_idx_b[:self.T]
+
+                    idx_list.append(idx_b)
+                idx = torch.stack(idx_list)  # (B, T)
+
+                gene_values   = torch.gather(gene_values, 1, idx)
+                pert_labels   = torch.gather(pert_labels, 1, idx)
+                target_values = torch.gather(target_values, 1, idx)
+                gene_ids      = torch.from_numpy(self.gene_ids).long()[idx]     # (B, T), per-row now
             else: # og scgpt version
                 idx = torch.randperm(n_genes)[:self.T]
 
-            gene_values   = gene_values[:, idx]
-            pert_labels   = pert_labels[:, idx]
-            target_values = target_values[:, idx]
-            gene_ids      = torch.from_numpy(self.gene_ids[idx]).long().unsqueeze(0).repeat(B, 1)
+                gene_values   = gene_values[:, idx]
+                pert_labels   = pert_labels[:, idx]
+                target_values = target_values[:, idx]
+                gene_ids      = torch.from_numpy(self.gene_ids[idx]).long().unsqueeze(0).repeat(B, 1)
         else:
             gene_ids      = torch.from_numpy(self.gene_ids).long().unsqueeze(0).repeat(B, 1)
 
