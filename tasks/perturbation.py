@@ -220,6 +220,7 @@ if __name__ == "__main__":
     parser.add_argument("--data", default="adamson", type=str, help="Dataset to use for training and evaluation.")
     parser.add_argument("--keep_perturbed_genes", action='store_true', help="Whether to keep perturbed genes in the input data. OG scGPT default to False.")
     parser.add_argument("--keep_genes_per_cell", action='store_true', help="Whether to keep genes per cell in the input data. OG scGPT default to False.")
+    parser.add_argument("--load_splits", action='store_true', help="Whether to load pre-saved train/val/test splits from a file. If not, new splits will be created and saved.")
     parser.add_argument("--log", action='store_true', help="Whether to log the training and evaluation process to a file.")
     args = parser.parse_args()
 
@@ -234,8 +235,16 @@ if __name__ == "__main__":
 
     tokenizer = scGPTTokenizer.from_pretrained("scGPT_human")
     tokenizer.max_length = 1536
-    data_splitter = PerturbationDataSplitter(adata, tokenizer, seed=args.seed)
-    train_adata, val_adata, test_adata = data_splitter.get_train_val_test()
+    if not args.load_splits:
+        print("Creating new train/val/test splits and saving to file.")
+        data_splitter = PerturbationDataSplitter(adata, tokenizer, seed=args.seed)
+        data_splitter.save_splits_to_file(f"./data/{args.data}/perturbation_splits_seed_{args.seed}.json")
+    else:
+        print("Loading train/val/test splits from file.")
+        split_file = f"./data/{args.data}/perturbation_splits_seed_{args.seed}.json"
+        data_splitter = PerturbationDataSplitter(adata, tokenizer, split_file=split_file, seed=args.seed)
+
+    train_adata, val_adata, test_adata = data_splitter.get_train_val_test_adata()
 
     train_dataset = PerturbationDataset(train_adata, tokenizer, split='train', keep_perturbed_genes=args.keep_perturbed_genes, keep_genes_per_cell=args.keep_genes_per_cell)
     test_dataset = PerturbationDataset(test_adata, tokenizer, split='test', keep_perturbed_genes=args.keep_perturbed_genes, keep_genes_per_cell=args.keep_genes_per_cell)
@@ -277,6 +286,7 @@ if __name__ == "__main__":
         train(model, train_loader, val_loader, n_epochs=args.n_epochs, lr=args.lr, step_size=args.scheduler_step_size,
             device=device, amp=not args.no_amp, early_stopping_patience=args.early_stopping_patience, 
             save_dir=save_dir, logger=logger)
+
 
     # Load the best saved model and evaluate on the test set.
     model.load_state_dict(torch.load(f"{save_dir}/best_model.pt", map_location=device))

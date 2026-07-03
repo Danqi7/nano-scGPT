@@ -1,4 +1,5 @@
 from typing import Dict, List, Tuple
+import json
 
 import numpy as np
 import torch
@@ -13,6 +14,7 @@ class PerturbationDataSplitter:
                  train_val_gene_set_size=0.9,
                  train_val_combo_seen2_train_size=0.9,
                  splits=['train', 'val', 'test'], 
+                 split_file=None,
                  seed=1):
         self.adata = adata
         self.tokenizer = tokenizer
@@ -22,14 +24,19 @@ class PerturbationDataSplitter:
         pert_names.remove("ctrl")
         assert splits == ['train', 'val', 'test'], "Only support train/val/test splits for now."
         
-        train_pert_names, test_pert_names, test_subgroups = self.split_perturbations(pert_names,
-                                                                        train_gene_set_size=train_gene_set_size, 
-                                                                        combo_seen2_train_size=combo_seen2_train_size,
-                                                                        seed=seed)
-        train_pert_names, val_pert_names, val_subgroups = self.split_perturbations(train_pert_names,
-                                                                        train_gene_set_size=train_val_gene_set_size, 
-                                                                        combo_seen2_train_size=train_val_combo_seen2_train_size,
-                                                                        seed=seed)
+        if split_file is None:
+            train_pert_names, test_pert_names, test_subgroups = self.split_perturbations(pert_names,
+                                                                            train_gene_set_size=train_gene_set_size, 
+                                                                            combo_seen2_train_size=combo_seen2_train_size,
+                                                                            seed=seed)
+            train_pert_names, val_pert_names, val_subgroups = self.split_perturbations(train_pert_names,
+                                                                            train_gene_set_size=train_val_gene_set_size, 
+                                                                            combo_seen2_train_size=train_val_combo_seen2_train_size,
+                                                                            seed=seed)
+        else:
+            # Load perturbation splits from a file.
+            train_pert_names, val_pert_names, test_pert_names, test_subgroups, val_subgroups = self._load_splits_from_file(split_file)
+
         self.train_pert_names = train_pert_names
         self.val_pert_names = val_pert_names
         self.test_pert_names = test_pert_names
@@ -55,10 +62,10 @@ class PerturbationDataSplitter:
         self.test_adata = adata[(adata.obs['split'] == "test") | (adata.obs['split'] == "ctrl")]
         self.val_adata = adata[(adata.obs['split'] == "val") | (adata.obs['split'] == "ctrl")]
 
-    def get_train_val_test(self):
+    def get_train_val_test_adata(self):
         return self.train_adata, self.val_adata, self.test_adata
 
-    def get_gene_set_from_perturnations(self, pert_names: List[str]) -> List[str]:
+    def get_gene_set_from_perturbations(self, pert_names: List[str]) -> List[str]:
         """Extract the unique set of genes in the perturbations from the list of perturbation names, excluding the "ctrl" condition."""
         gene_set = set()
         for pert in pert_names:
@@ -67,6 +74,31 @@ class PerturbationDataSplitter:
                 if g != "ctrl":
                     gene_set.add(g)
         return sorted(list(gene_set))
+    
+    def _load_splits_from_file(self, split_file: str) -> Tuple[List[str], List[str], List[str], Dict[str, List[str]], Dict[str, List[str]]]:
+        """Load perturbation splits from a JSON file."""
+        with open(split_file, 'r') as f:
+            splits_data = json.load(f)
+        
+        train_pert_names = splits_data.get("train", [])
+        val_pert_names = splits_data.get("val", [])
+        test_pert_names = splits_data.get("test", [])
+        test_subgroups = splits_data.get("test_subgroups", {})
+        val_subgroups = splits_data.get("val_subgroups", {})
+
+        return train_pert_names, val_pert_names, test_pert_names, test_subgroups, val_subgroups
+    
+    def save_splits_to_file(self, split_file: str):
+        """Save perturbation splits to a JSON file."""
+        splits_data = {
+            "train": self.train_pert_names,
+            "val": self.val_pert_names,
+            "test": self.test_pert_names,
+            "test_subgroups": self.test_subgroups,
+            "val_subgroups": self.val_subgroups
+        }
+        with open(split_file, 'w') as f:
+            json.dump(splits_data, f, indent=4)
 
     def split_perturbations(self, pert_names, 
                             train_gene_set_size=0.75, 
@@ -79,7 +111,7 @@ class PerturbationDataSplitter:
         Args:
             pert_names: list of perturbation names, e.g. ["geneA", "geneB", "geneA+ctrl", ...], excluding "ctrl".
             train_gene_set_size: fraction of individual genes to be included in the training set.
-            combo_seen2_train_size: fraction of comb perturbations with both genes individually seen in the train set to be included in the train set.
+            combo_seen2_train_size: fraction of combo perturbations with both genes individually seen in the train set to be included in the train set.
             seed: random seed for reproducibility.
         Returns:
             train_pert_names: list of perturbation names for training.
@@ -90,7 +122,7 @@ class PerturbationDataSplitter:
 
         train_names = []
         test_names = []
-        unique_genes = self.get_gene_set_from_perturnations(pert_names)
+        unique_genes = self.get_gene_set_from_perturbations(pert_names)
 
         train_genes_candidates = np.random.choice(unique_genes, size=int(len(unique_genes)*train_gene_set_size), replace=False)
         ood_genes = np.setdiff1d(unique_genes, train_genes_candidates)
@@ -148,7 +180,7 @@ class PerturbationDataset(Dataset):
         self.num_ctrl = num_ctrl
         self.keep_perturbed_genes = keep_perturbed_genes
         self.keep_genes_per_cell = keep_genes_per_cell
-        
+
         self.vocab_genes_idx = [idx for idx, g in enumerate(self.gene_names) if g in self.tokenizer.vocab]
         self.aligned_gene_ids = np.array([self.tokenizer.vocab[self.gene_names[idx]] for idx in self.vocab_genes_idx]) # shape [G_vocab]
         if len(self.aligned_gene_ids) == 0:
