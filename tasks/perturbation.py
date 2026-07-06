@@ -9,7 +9,9 @@ from nano_scgpt.model import scGPTForPerturbationResponsePrediction
 from nano_scgpt.scGPT_tokenizer import scGPTTokenizer
 from nano_scgpt.perturbation_data import PerturbationDataSplitter, PerturbationDataset
 
+from typing import Dict, List, Tuple
 import os
+import json
 import random
 import warnings
 import argparse
@@ -29,7 +31,12 @@ def log(message, logger=None):
     else:
         print(message)
 
-def compute_perturbation_metrics(preds: np.ndarray, gts: np.ndarray, pert_names:np.ndarray, ctrl_adata: sc.AnnData):
+def compute_perturbation_metrics(
+    preds: np.ndarray, 
+    gts: np.ndarray, 
+    pert_names:np.ndarray, 
+    ctrl_adata: sc.AnnData, 
+    subgroups: Dict[str, List[int]] = None) -> Tuple[Dict[str, float], Dict[str, Dict[str, float]], Dict[str, Dict[str, float]]]:
     """
     Args:
         preds (`np.ndarray` of shape `[n_cells, n_genes]`):
@@ -40,8 +47,12 @@ def compute_perturbation_metrics(preds: np.ndarray, gts: np.ndarray, pert_names:
             array of perturbation names corresponding to each cell. e.g ["geneA+ctrl", "geneB+geneC", "geneA+ctrl", ...]
         ctrl_adata (`sc.AnnData`):
             AnnData object only containing control cells.
+        subgroups (`Dict[str, List[int]]`, optional):
+            A dictionary where keys are subgroup names and values are lists of perturbation names.
     Returns:
         metrics_across_genes: dict of lists, where each list contains the metric values for each gene, averaged across perturbations.
+        metrics_by_perts: dict of dicts, where each key is a perturbation name and each value is a dict of metrics for that perturbation.
+        subgroup_metrics: dict of dicts, where each key is a subgroup name and each value is a dict of metrics for that subgroup.
     """
     metrics_across_genes = {
         "pearson": [],
@@ -49,6 +60,8 @@ def compute_perturbation_metrics(preds: np.ndarray, gts: np.ndarray, pert_names:
         "pearson_delta": [],
         "pearson_de_delta": [],
     } # across gene metrics, averaged across perturbations.
+    metrics_by_perts = {} # [pertubation_name] -> dict of metrics for that perturbation.
+    subgroup_metrics = {} # [subgroup_name] -> dict of metrics for that subgroup.
 
     unique_pert_names = np.unique(pert_names)
     assert not 'ctrl' in unique_pert_names, "Control condition should not be included in the perturbation names."
@@ -64,12 +77,20 @@ def compute_perturbation_metrics(preds: np.ndarray, gts: np.ndarray, pert_names:
     # 1. Pearson correlation across genes, averaged across perturbations.
     zero_rows = np.all(gts_by_pert == 0, axis=1)   # bool mask for rows where all gene expressions are zero
     valid = ~zero_rows
-    for x, y in zip(preds_by_pert[valid], gts_by_pert[valid]):
-        metrics_across_genes["pearson"].append(pearsonr(x, y)[0]) # [n_perts]
+    for x, y, name in zip(preds_by_pert[valid], gts_by_pert[valid], unique_pert_names[valid]):
+        pc = float(pearsonr(x, y)[0])
+        metrics_across_genes["pearson"].append(pc) # [n_perts]
+        if name not in metrics_by_perts:
+            metrics_by_perts[name] = {}
+        metrics_by_perts[name]["pearson"] = pc
     
     # 2. Pearson correlation across genes for delta expression, averaged across perturbations.
-    for x, y in zip(preds_delta_by_pert[valid], gts_delta_by_pert[valid]):
-        metrics_across_genes["pearson_delta"].append(pearsonr(x, y)[0]) # [n_perts]
+    for x, y, name in zip(preds_delta_by_pert[valid], gts_delta_by_pert[valid], unique_pert_names[valid]):
+        pc_delta = float(pearsonr(x, y)[0])
+        metrics_across_genes["pearson_delta"].append(pc_delta) # [n_perts]
+        if name not in metrics_by_perts:
+            metrics_by_perts[name] = {}
+        metrics_by_perts[name]["pearson_delta"] = pc_delta
     
     # Differential expression (DE) gene.
     top_n = 20
@@ -92,25 +113,56 @@ def compute_perturbation_metrics(preds: np.ndarray, gts: np.ndarray, pert_names:
     # 3. Pearson correlation across DE genes.
     zero_rows_de = np.all(gts_by_pert_de == 0, axis=1)   # bool mask for rows where all DE gene expressions are zero
     valid_de = ~zero_rows_de
-    for x, y in zip(preds_by_pert_de[valid_de], gts_by_pert_de[valid_de]):
-        metrics_across_genes["pearson_de"].append(pearsonr(x, y)[0]) # [n_perts]
+    for x, y, name in zip(preds_by_pert_de[valid_de], gts_by_pert_de[valid_de], unique_pert_names[valid_de]):
+        pc_de = float(pearsonr(x, y)[0])
+        metrics_across_genes["pearson_de"].append(pc_de) # [n_perts]
+        if name not in metrics_by_perts:
+            metrics_by_perts[name] = {}
+        metrics_by_perts[name]["pearson_de"] = pc_de
     
     # 4. Pearson correlation across DE genes for delta expression.
-    for x, y in zip(preds_delta_by_pert_de[valid_de], gts_delta_by_pert_de[valid_de]):
-        metrics_across_genes["pearson_de_delta"].append(pearsonr(x, y)[0]) # [n_perts]
+    for x, y, name in zip(preds_delta_by_pert_de[valid_de], gts_delta_by_pert_de[valid_de], unique_pert_names[valid_de]):
+        pc_de_delta = float(pearsonr(x, y)[0])
+        metrics_across_genes["pearson_de_delta"].append(pc_de_delta) # [n_perts]
+        if name not in metrics_by_perts:
+            metrics_by_perts[name] = {}
+        metrics_by_perts[name]["pearson_de_delta"] = pc_de_delta
 
     # 5. Compute correlation on ground truth perturbation distances vs predicted perturbation distances.
     # Compute pairwise distances between perturbations based on their mean expression profiles.
     gt_distances = pdist(gts_by_pert, metric='euclidean') # [n_perts * (n_perts - 1) / 2]
     pred_distances = pdist(preds_by_pert, metric='euclidean') # [n_perts * (n_perts - 1) / 2]
     # Flatten the distance matrices and compute Pearson correlation between them.
-    metrics_across_genes["pearson_perturbation_distance"] = pearsonr(gt_distances, pred_distances)[0]
-    metrics_across_genes["spearman_perturbation_distance"] = spearmanr(gt_distances, pred_distances)[0]
+    metrics_across_genes["pearson_perturbation_distance"] = float(pearsonr(gt_distances, pred_distances)[0])
+    metrics_across_genes["spearman_perturbation_distance"] = float(spearmanr(gt_distances, pred_distances)[0])
 
+    # Subgroup analysis if subgroups are provided.
+    if subgroups is not None:
+        for subgroup_name, subgroup_perts in subgroups.items():
+            sub_pearson = []
+            sub_pearson_de = []
+            sub_pearson_delta = []
+            sub_pearson_de_delta = []
+            for pert in subgroup_perts:
+                if pert in metrics_by_perts:
+                    if "pearson" in metrics_by_perts[pert]:
+                        sub_pearson.append(metrics_by_perts[pert]["pearson"])
+                    if "pearson_de" in metrics_by_perts[pert]:
+                        sub_pearson_de.append(metrics_by_perts[pert]["pearson_de"])
+                    if "pearson_delta" in metrics_by_perts[pert]:
+                        sub_pearson_delta.append(metrics_by_perts[pert]["pearson_delta"])
+                    if "pearson_de_delta" in metrics_by_perts[pert]:
+                        sub_pearson_de_delta.append(metrics_by_perts[pert]["pearson_de_delta"])
+            subgroup_metrics[subgroup_name] = {
+                "pearson": float(np.mean(sub_pearson)) if sub_pearson else np.nan,
+                "pearson_de": float(np.mean(sub_pearson_de)) if sub_pearson_de else np.nan,
+                "pearson_delta": float(np.mean(sub_pearson_delta)) if sub_pearson_delta else np.nan,
+                "pearson_de_delta": float(np.mean(sub_pearson_de_delta)) if sub_pearson_de_delta else np.nan,
+            }
 
-    metrics_across_genes = {k: np.mean(v) for k, v in metrics_across_genes.items()}
+    metrics_across_genes = {k: float(np.mean(v)) for k, v in metrics_across_genes.items()}
 
-    return metrics_across_genes
+    return metrics_across_genes, metrics_by_perts, subgroup_metrics
 
 
 
@@ -162,7 +214,7 @@ def train(model, train_loader, val_loader, n_epochs=15, lr=1e-4, step_size=1, de
         scheduler.step()
     
         # Evaluation.
-        metrics = evaluate(model, val_loader, device=device, amp=amp, logger=logger)
+        metrics, _, _ = evaluate(model, val_loader, device=device, amp=amp, logger=logger)
 
         # Early stopping based on pearson correlation across genes.
         # !NOTE: can also use pearson delta instead.
@@ -177,7 +229,7 @@ def train(model, train_loader, val_loader, n_epochs=15, lr=1e-4, step_size=1, de
                 log(f"Early stopping triggered after {epoch+1} epochs.", logger)
                 break
     
-def evaluate(model, test_loader, device='cuda', amp=True, logger=None):
+def evaluate(model, test_loader, device='cuda', amp=True, logger=None, save_dir=None, subgroups=None):
     model.eval()
 
     ctrl_adata = test_loader.dataset.adata[test_loader.dataset.adata.obs['condition'] == 'ctrl']
@@ -201,11 +253,19 @@ def evaluate(model, test_loader, device='cuda', amp=True, logger=None):
 
         predictions = np.stack(predictions)
         gts = np.stack(gts)
-        metrics = compute_perturbation_metrics(predictions, gts, np.array(perts), ctrl_adata)
+        metrics, metrics_by_perts, subgroup_metrics = compute_perturbation_metrics(
+            predictions, 
+            gts, 
+            np.array(perts), 
+            ctrl_adata,
+            subgroups=subgroups)
         log(f"Test Prediction Shape: {predictions.shape}, GT Shape: {gts.shape}, Perturbations Length: {len(perts)}", logger)
         log(f"Eval | " + " | ".join(f"{k}={v:.4f}" for k, v in metrics.items()), logger)
+        log(f"Metrics by Perturbations: {metrics_by_perts}", logger)
+        if subgroup_metrics:
+            log(f"Subgroup Metrics: {subgroup_metrics}", logger)
     
-    return metrics
+    return metrics, metrics_by_perts, subgroup_metrics
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -290,7 +350,15 @@ if __name__ == "__main__":
 
     # Load the best saved model and evaluate on the test set.
     model.load_state_dict(torch.load(f"{save_dir}/best_model.pt", map_location=device))
-    evaluate(model, test_loader, device=device, amp=not args.no_amp, logger=logger)
+    metrics, metrics_by_perts, subgroup_metrics = evaluate(model, test_loader, 
+    device=device, amp=not args.no_amp, logger=logger, subgroups=data_splitter.test_subgroups)
+    if save_dir:
+        with open(f"{save_dir}/eval_metrics.json", "w") as f:
+            json.dump({
+                "metrics": metrics,
+                "metrics_by_perts": metrics_by_perts,
+                "subgroup_metrics": subgroup_metrics
+            }, f, indent=4)
 
     log("Done.", logger)
 
