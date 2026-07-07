@@ -59,6 +59,10 @@ def compute_perturbation_metrics(
         "pearson_de": [],
         "pearson_delta": [],
         "pearson_de_delta": [],
+        "pearson_perturbation_distance": 0.0,
+        "spearman_perturbation_distance": 0.0,
+        "direction_accuracy": 0.0,
+        "direction_accuracy_de": 0.0
     } # across gene metrics, averaged across perturbations.
     metrics_by_perts = {} # [pertubation_name] -> dict of metrics for that perturbation.
     subgroup_metrics = {} # [subgroup_name] -> dict of metrics for that subgroup.
@@ -136,6 +140,12 @@ def compute_perturbation_metrics(
     metrics_across_genes["pearson_perturbation_distance"] = float(pearsonr(gt_distances, pred_distances)[0])
     metrics_across_genes["spearman_perturbation_distance"] = float(spearmanr(gt_distances, pred_distances)[0])
 
+    # 6. Direction accuracy: proportion of genes where the predicted change in expression has the same sign as the ground truth change in expression.
+    direction_accuracy = np.mean(np.sign(preds_delta_by_pert) == np.sign(gts_delta_by_pert))
+    metrics_across_genes["direction_accuracy"] = float(direction_accuracy)
+    direction_accuracy_de = np.mean(np.sign(preds_delta_by_pert_de) == np.sign(gts_delta_by_pert_de))
+    metrics_across_genes["direction_accuracy_de"] = float(direction_accuracy_de)
+
     # Subgroup analysis if subgroups are provided.
     if subgroups is not None:
         for subgroup_name, subgroup_perts in subgroups.items():
@@ -143,6 +153,8 @@ def compute_perturbation_metrics(
             sub_pearson_de = []
             sub_pearson_delta = []
             sub_pearson_de_delta = []
+            sub_direction_accuracy = []
+            sub_direction_accuracy_de = []
             for pert in subgroup_perts:
                 if pert in metrics_by_perts:
                     if "pearson" in metrics_by_perts[pert]:
@@ -153,11 +165,17 @@ def compute_perturbation_metrics(
                         sub_pearson_delta.append(metrics_by_perts[pert]["pearson_delta"])
                     if "pearson_de_delta" in metrics_by_perts[pert]:
                         sub_pearson_de_delta.append(metrics_by_perts[pert]["pearson_de_delta"])
+                    if "direction_accuracy" in metrics_by_perts[pert]:
+                        sub_direction_accuracy.append(metrics_by_perts[pert]["direction_accuracy"])
+                    if "direction_accuracy_de" in metrics_by_perts[pert]:
+                        sub_direction_accuracy_de.append(metrics_by_perts[pert]["direction_accuracy_de"])
             subgroup_metrics[subgroup_name] = {
                 "pearson": float(np.mean(sub_pearson)) if sub_pearson else np.nan,
                 "pearson_de": float(np.mean(sub_pearson_de)) if sub_pearson_de else np.nan,
                 "pearson_delta": float(np.mean(sub_pearson_delta)) if sub_pearson_delta else np.nan,
                 "pearson_de_delta": float(np.mean(sub_pearson_de_delta)) if sub_pearson_de_delta else np.nan,
+                "direction_accuracy": float(np.mean(sub_direction_accuracy)) if sub_direction_accuracy else np.nan,
+                "direction_accuracy_de": float(np.mean(sub_direction_accuracy_de)) if sub_direction_accuracy_de else np.nan,
             }
 
     metrics_across_genes = {k: float(np.mean(v)) for k, v in metrics_across_genes.items()}
