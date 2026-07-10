@@ -8,7 +8,10 @@ from torch.utils.data import Dataset
 
 class PerturbationDataSplitter:
 
-    def __init__(self, adata, tokenizer, 
+    def __init__(self, adata, tokenizer,
+                 condition_col='condition',
+                 condition_delimiter='+',
+                 control_condition='ctrl',
                  train_gene_set_size=0.75,
                  combo_seen2_train_size=0.75,
                  train_val_gene_set_size=0.9,
@@ -19,9 +22,12 @@ class PerturbationDataSplitter:
         self.adata = adata
         self.tokenizer = tokenizer
         self.splits = splits
+        self.condition_col = condition_col
+        self.condition_delimiter = condition_delimiter
+        self.control_condition = control_condition
 
-        pert_names = adata.obs['condition'].unique().tolist()
-        pert_names.remove("ctrl")
+        pert_names = adata.obs[self.condition_col].unique().tolist()
+        pert_names.remove(self.control_condition)
         assert splits == ['train', 'val', 'test'], "Only support train/val/test splits for now."
         
         if split_file is None:
@@ -55,23 +61,23 @@ class PerturbationDataSplitter:
             pert2split[p] = "val"
         for p in test_pert_names:
             pert2split[p] = "test"
-        pert2split["ctrl"] = "ctrl"
-        adata.obs['split'] = adata.obs['condition'].map(pert2split)
+        pert2split[self.control_condition] = self.control_condition
+        adata.obs['split'] = adata.obs[self.condition_col].map(pert2split)
         
-        self.train_adata = adata[(adata.obs['split']  == "train") | (adata.obs['split'] == "ctrl")]
-        self.test_adata = adata[(adata.obs['split'] == "test") | (adata.obs['split'] == "ctrl")]
-        self.val_adata = adata[(adata.obs['split'] == "val") | (adata.obs['split'] == "ctrl")]
+        self.train_adata = adata[(adata.obs['split']  == "train") | (adata.obs['split'] == self.control_condition)]
+        self.test_adata = adata[(adata.obs['split'] == "test") | (adata.obs['split'] == self.control_condition)]
+        self.val_adata = adata[(adata.obs['split'] == "val") | (adata.obs['split'] == self.control_condition)]
 
     def get_train_val_test_adata(self):
         return self.train_adata, self.val_adata, self.test_adata
 
     def get_gene_set_from_perturbations(self, pert_names: List[str]) -> List[str]:
-        """Extract the unique set of genes in the perturbations from the list of perturbation names, excluding the "ctrl" condition."""
+        """Extract the unique set of genes in the perturbations from the list of perturbation names, excluding the control condition."""
         gene_set = set()
         for pert in pert_names:
-            genes = pert.split("+")
+            genes = pert.split(self.condition_delimiter)
             for g in genes:
-                if g != "ctrl":
+                if g != self.control_condition:
                     gene_set.add(g)
         return sorted(list(gene_set))
     
@@ -109,7 +115,7 @@ class PerturbationDataSplitter:
         and single_unseen based on the presence of their individual genes in the training set.
 
         Args:
-            pert_names: list of perturbation names, e.g. ["geneA", "geneB", "geneA+ctrl", ...], excluding "ctrl".
+            pert_names: list of perturbation names, e.g. ["geneA", "geneB", "geneA+ctrl", ...], excluding the control condition.
             train_gene_set_size: fraction of individual genes to be included in the training set.
             combo_seen2_train_size: fraction of combo perturbations with both genes individually seen in the train set to be included in the train set.
             seed: random seed for reproducibility.
@@ -136,9 +142,9 @@ class PerturbationDataSplitter:
         test_subgroups = {"combo_seen0": [], "combo_seen1": [], "combo_seen2": [], "single_unseen": []}
         combo2_candidates = []
         for pert in pert_names:
-            genes = pert.split("+")
-            if len(genes) == 1 or genes[0] == "ctrl" or genes[1] == "ctrl": # single-gene perturbation
-                current_gene = genes[0] if genes[0] != "ctrl" else genes[1]
+            genes = pert.split(self.condition_delimiter)
+            if len(genes) == 1 or genes[0] == self.control_condition or genes[1] == self.control_condition: # single-gene perturbation
+                current_gene = genes[0] if genes[0] != self.control_condition else genes[1]
                 if current_gene in train_genes_candidates:
                     train_names.append(pert)
                 else:
@@ -172,12 +178,18 @@ class PerturbationDataSplitter:
 
 class PerturbationDataset(Dataset):
 
-    def __init__(self, adata, tokenizer, split='train', num_ctrl=1, keep_perturbed_genes=False, keep_genes_per_cell=False):
+    def __init__(self, adata, tokenizer, 
+                 condition_col='condition', condition_delimiter='+', control_condition='ctrl', 
+                 split='train', num_ctrl=1, 
+                 keep_perturbed_genes=False, keep_genes_per_cell=False, ):
         self.adata = adata
         self.tokenizer = tokenizer # NOTE: need to flag `filter_zero_expr_genes=False` for the perturbation task since we want to keep the zero-expression genes for prediction.
         self.gene_names = adata.var['gene_symbol'].tolist()
         self.split = split
         self.num_ctrl = num_ctrl
+        self.condition_col = condition_col
+        self.condition_delimiter = condition_delimiter
+        self.control_condition = control_condition
         self.keep_perturbed_genes = keep_perturbed_genes
         self.keep_genes_per_cell = keep_genes_per_cell
 
@@ -197,21 +209,21 @@ class PerturbationDataset(Dataset):
         ])
         
         self.T = self.tokenizer.max_length
-        self.ctrl_idx = np.where(adata.obs['condition'] == 'ctrl')[0]
+        self.ctrl_idx = np.where(adata.obs[self.condition_col] == self.control_condition)[0]
 
         self.pairs = [] # [(ctrl_idx, pert_idx, pert_names)]
         for idx, row in enumerate(adata.obs.itertuples()):
-            condition = row.condition
-            if condition != 'ctrl':
-                pert_genes = [g for g in condition.split("+") if g != "ctrl"]
+            condition = getattr(row, self.condition_col)
+            if condition != self.control_condition:
+                pert_genes = [g for g in condition.split(self.condition_delimiter) if g != self.control_condition]
                 sampled_ctrl_idx = self.ctrl_idx[np.random.randint(0, len(self.ctrl_idx), self.num_ctrl)]
                 for c_idx in sampled_ctrl_idx:
                     self.pairs.append((c_idx, idx, pert_genes, condition))
             elif split == 'train': # only include ctrl-ctrl pairs in the training set.
-                self.pairs.append((idx, idx, ['ctrl'], condition))
+                self.pairs.append((idx, idx, [self.control_condition], condition))
         
         # TODO: Do DGE analysis for each perturbation vs ctrl and save the top K DE genes for evaluation.
-        self.perturbations = adata.obs['condition'].unique().tolist()
+        self.perturbations = adata.obs[self.condition_col].unique().tolist()
         
     def __len__(self):
         return len(self.pairs)
