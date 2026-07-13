@@ -18,6 +18,7 @@ import random
 import warnings
 import argparse
 import logging
+from tqdm import tqdm
 
 def _set_seed(seed):
     """set random seed."""
@@ -33,7 +34,7 @@ def log(message, logger=None):
     else:
         print(message)
 
-def _preprocess_adata(adata: sc.AnnData, 
+def preprocess_adata(adata: sc.AnnData, 
                       gene_symbol_col : str, 
                       covariate: str, 
                       condition_col: str,
@@ -102,7 +103,6 @@ class PerturbationTrainer:
         self.scheduler_step_size = args.scheduler_step_size
         self.early_stopping_patience = args.early_stopping_patience
         self.device = args.device
-        self.keep_perturbed_genes = args.keep_perturbed_genes
         self.keep_genes_per_cell = args.keep_genes_per_cell
         self.batch_size = args.batch_size
         self.amp = not args.no_amp
@@ -114,24 +114,24 @@ class PerturbationTrainer:
         _set_seed(self.seed)
  
         # Data Preparation.
-        if not self.load_splits:
+        split_file = f"./data/{args.data}/perturbation_splits_seed_{self.seed}.json"
+        if not self.load_splits or not os.path.exists(split_file):
             print("Creating new train/val/test splits and saving to file.")
             self.splitter = PerturbationDataSplitter(adata, tokenizer, seed=self.seed)
-            self.splitter.save_splits_to_file(f"./data/{args.data}/perturbation_splits_seed_{self.seed}.json")
+            self.splitter.save_splits_to_file(split_file)
         else:
             print("Loading train/val/test splits from file.")
-            split_file = f"./data/{args.data}/perturbation_splits_seed_{self.seed}.json"
             self.splitter = PerturbationDataSplitter(adata, tokenizer, split_file=split_file, seed=self.seed)
         train_adata, val_adata, test_adata = self.splitter.get_train_val_test_adata()
         self.train_dataset = PerturbationDataset(train_adata, tokenizer, split='train', 
                                                  condition_col=self.condition_col, condition_delimiter=self.condition_delimiter, control_condition=self.control_condition,
-                                                 keep_perturbed_genes=self.keep_perturbed_genes, keep_genes_per_cell=self.keep_genes_per_cell)
+                                                 keep_genes_per_cell=self.keep_genes_per_cell)
         self.test_dataset = PerturbationDataset(test_adata, tokenizer, split='test', 
                                                 condition_col=self.condition_col, condition_delimiter=self.condition_delimiter, control_condition=self.control_condition,
-                                                keep_perturbed_genes=self.keep_perturbed_genes, keep_genes_per_cell=self.keep_genes_per_cell)
+                                                keep_genes_per_cell=self.keep_genes_per_cell)
         self.val_dataset = PerturbationDataset(val_adata, tokenizer, split='val', 
                                                condition_col=self.condition_col, condition_delimiter=self.condition_delimiter, control_condition=self.control_condition,
-                                               keep_perturbed_genes=self.keep_perturbed_genes, keep_genes_per_cell=self.keep_genes_per_cell)
+                                               keep_genes_per_cell=self.keep_genes_per_cell)
         self.train_loader = DataLoader(self.train_dataset, batch_size=self.batch_size, shuffle=True, collate_fn=self.train_dataset.collate_fn)
         self.test_loader = DataLoader(self.test_dataset, batch_size=self.batch_size, shuffle=False, collate_fn=self.test_dataset.collate_fn)
         self.val_loader = DataLoader(self.val_dataset, batch_size=self.batch_size, shuffle=False, collate_fn=self.val_dataset.collate_fn)
@@ -147,7 +147,7 @@ class PerturbationTrainer:
     def train(self):
         patience = 0
 
-        for epoch in range(self.n_epochs):
+        for epoch in tqdm(range(self.n_epochs), desc="Training Epochs", unit="epoch"):
             self.model.train()
             train_loss = 0.0
 
@@ -211,7 +211,7 @@ class PerturbationTrainer:
         gts = []
         perts = []
         with torch.no_grad():
-            for idx, batch in enumerate(loader):
+            for idx, batch in tqdm(enumerate(loader), total=len(loader), desc="Evaluating", unit="batch"):
                 gene_ids = batch["gene_ids"].to(device)
                 gene_values = batch["gene_values"].to(device)
                 src_key_padding_mask = batch["src_key_padding_mask"].to(device)
@@ -244,7 +244,6 @@ class PerturbationTrainer:
         return metrics, metrics_by_perts, subgroup_metrics
 
 
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("--data", default="adamson", type=str, choices=["adamson", "norman", "replogle_k562_essential"], help="Dataset to use for training and evaluation.")
@@ -265,7 +264,6 @@ if __name__ == '__main__':
     parser.add_argument("--no_amp", action='store_true', help="Whether to disable automatic mixed precision (AMP) for training.")
     parser.add_argument("--early_stopping_patience", type=int, default=10, help="Number of epochs to wait for improvement before early stopping.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility.")    
-    parser.add_argument("--keep_perturbed_genes", action='store_true', help="Whether to keep perturbed genes in the input data. OG scGPT default to False.")
     parser.add_argument("--keep_genes_per_cell", action='store_true', help="Whether to keep genes per cell in the input data. OG scGPT default to False.")
     parser.add_argument("--load_splits", action='store_true', help="Whether to load pre-saved train/val/test splits from a file. If not, new splits will be created and saved.")
     parser.add_argument("--log", action='store_true', help="Whether to log the training and evaluation process to a file.")
@@ -273,7 +271,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     os.makedirs(f"./results/{args.data}", exist_ok=True)
-    save_dir = f"./results/{args.data}/keep_{args.keep_perturbed_genes}_keep_genes_per_cell_{args.keep_genes_per_cell}_seed_{args.seed}"
+    save_dir = f"./results/{args.data}/keep_genes_per_cell_{args.keep_genes_per_cell}_seed_{args.seed}"
     os.makedirs(save_dir, exist_ok=True)
     args.save_dir = save_dir
 
@@ -299,7 +297,7 @@ if __name__ == '__main__':
         adata.var['gene_symbol'] = adata.var[args.gene_symbol_col]
     else:
         adata = sc.read_h5ad(args.data_file)
-        adata = _preprocess_adata(adata,
+        adata = preprocess_adata(adata,
                                   gene_symbol_col=args.gene_symbol_col, 
                                   covariate=args.covariate, 
                                   condition_col=args.condition_col,

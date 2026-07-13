@@ -1,6 +1,7 @@
 from typing import Dict, List, Tuple
 import json
 
+import os
 import numpy as np
 import torch
 from torch.utils.data import Dataset
@@ -30,7 +31,7 @@ class PerturbationDataSplitter:
         pert_names.remove(self.control_condition)
         assert splits == ['train', 'val', 'test'], "Only support train/val/test splits for now."
         
-        if split_file is None:
+        if split_file is None or not os.path.exists(split_file):
             train_pert_names, test_pert_names, test_subgroups = self.split_perturbations(pert_names,
                                                                             train_gene_set_size=train_gene_set_size, 
                                                                             combo_seen2_train_size=combo_seen2_train_size,
@@ -40,7 +41,6 @@ class PerturbationDataSplitter:
                                                                             combo_seen2_train_size=train_val_combo_seen2_train_size,
                                                                             seed=seed)
         else:
-            # Load perturbation splits from a file.
             train_pert_names, val_pert_names, test_pert_names, test_subgroups, val_subgroups = self._load_splits_from_file(split_file)
 
         self.train_pert_names = train_pert_names
@@ -181,7 +181,7 @@ class PerturbationDataset(Dataset):
     def __init__(self, adata, tokenizer, 
                  condition_col='condition', condition_delimiter='+', control_condition='ctrl', 
                  split='train', num_ctrl=1, 
-                 keep_perturbed_genes=False, keep_genes_per_cell=False, ):
+                 keep_genes_per_cell=False):
         self.adata = adata
         self.tokenizer = tokenizer # NOTE: need to flag `filter_zero_expr_genes=False` for the perturbation task since we want to keep the zero-expression genes for prediction.
         self.gene_names = adata.var['gene_symbol'].tolist()
@@ -190,7 +190,6 @@ class PerturbationDataset(Dataset):
         self.condition_col = condition_col
         self.condition_delimiter = condition_delimiter
         self.control_condition = control_condition
-        self.keep_perturbed_genes = keep_perturbed_genes
         self.keep_genes_per_cell = keep_genes_per_cell
 
         self.vocab_genes_idx = [idx for idx, g in enumerate(self.gene_names) if g in self.tokenizer.vocab]
@@ -261,24 +260,7 @@ class PerturbationDataset(Dataset):
             # ![TODO][NOTE]: this means perturbed genes may get dropped with probability (T/n_genes), which flags the whole pair as NOT perturbed but in reality it is.
             # This can be misleading for the model, and degrade fine-tuning performance on the perturbation prediction task. 
             # A potential solution is to always keep the perturbed genes and only sample from the non-perturbed genes to fill up the T tokens.
-            
-            if self.keep_perturbed_genes: # always keep perturbed genes in a batch;
-                # always keep genes perturbed anywhere in the batch; sample the rest
-                pert_idx     = torch.where((pert_labels > 0).any(dim=0))[0]   # (n_perturbed_in_batch,)
-                non_pert_idx = torch.where((pert_labels > 0).any(dim=0) == False)[0]
-
-                num_non_pert_to_sample = self.T - len(pert_idx)
-                if num_non_pert_to_sample > 0:
-                    sampled = non_pert_idx[torch.randperm(len(non_pert_idx))[:num_non_pert_to_sample]]
-                    idx = torch.cat([pert_idx, sampled])
-                else:
-                    idx = pert_idx[:self.T]   # more perturbed genes than T (rare) → truncate
-                
-                gene_values   = gene_values[:, idx]
-                pert_labels   = pert_labels[:, idx]
-                target_values = target_values[:, idx]
-                gene_ids      = torch.from_numpy(self.gene_ids[idx]).long().unsqueeze(0).repeat(B, 1)
-            elif self.keep_genes_per_cell: # always keep perturbed genes for each cell.
+            if self.keep_genes_per_cell: # always keep perturbed genes for each cell.
                 # per-example: keep this example's perturbed gene(s), sample the rest from its own non-perturbed genes
                 idx_list = []
                 for b in range(B):
