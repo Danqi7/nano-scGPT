@@ -96,7 +96,7 @@ if __name__ == "__main__":
     parser.add_argument("--groupby", default="condition_name", type=str, help="Column in adata.obs to group by for DGE analysis.")
     parser.add_argument("--pre_normalized", action='store_true', help="Whether the input data is already normalized. If not, normalization will be applied.")
 
-    parser.add_argument("--mode", type=str, default="train", choices=["train", "eval"], help="Whether to train the model or evaluate the best saved model on the test set.")
+    parser.add_argument("--mode", type=str, default="train", choices=["train", "eval", "predict"], help="Whether to train the model or evaluate the best saved model on the test set.")
     parser.add_argument("--batch_size", type=int, default=64, help="Batch size for training and evaluation.")
     parser.add_argument("--n_epochs", type=int, default=15, help="Number of training epochs.")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate for the optimizer.")
@@ -107,6 +107,9 @@ if __name__ == "__main__":
     parser.add_argument("--keep_genes_per_cell", action='store_true', help="Whether to keep genes per cell in the input data. OG scGPT default to False.")
     parser.add_argument("--load_splits", action='store_true', help="Whether to load pre-saved train/val/test splits from a file. If not, new splits will be created and saved.")
     parser.add_argument("--log", action='store_true', help="Whether to log the training and evaluation process to a file.")
+
+    parser.add_argument("--perturbation", type=str, default=None, help="Perturbation to predict. Required if mode is 'predict'.")
+    parser.add_argument("--n_samples", type=int, default=64, help="Number of samples to generate for prediction. Only used if mode is 'predict'.")
 
     args = parser.parse_args()
 
@@ -133,10 +136,12 @@ if __name__ == "__main__":
     
     if not args.data_file:
         # these are already preprocessed by GEAR.
+        print(f"Loading dataset '{args.data}' from {args.data_dir} ...")
         adata = _download_or_load_data(args.data, data_dir=args.data_dir)
         adata.var['gene_symbol'] = adata.var[args.gene_symbol_col]
     else:
         # custom data file provided by user. Preprocess it to match the expected format.
+        print(f"Loading custom dataset from {args.data_file} ...")
         adata = sc.read_h5ad(args.data_file)
         adata = preprocess_adata(adata,
                                   gene_symbol_col=args.gene_symbol_col, 
@@ -161,21 +166,41 @@ if __name__ == "__main__":
         trainer.train()
     
     # Evaluate best model on test set.
-    model.load_state_dict(torch.load(f"{args.save_dir}/best_model.pt", map_location=args.device))
-    print("Starting evaluation ...")
-    metrics, metrics_by_perts, subgroup_metrics = trainer.evaluate(model, 
-                                                                   trainer.test_loader, 
-                                                                   device=args.device, 
-                                                                   amp=not args.no_amp, 
-                                                                   logger=logger, 
-                                                                   subgroups=trainer.test_subgroups)
-    if args.save_dir:
-        with open(f"{args.save_dir}/eval_metrics.json", "w") as f:
-            json.dump({
-                "metrics": metrics,
-                "metrics_by_perts": metrics_by_perts,
-                "subgroup_metrics": subgroup_metrics
-            }, f, indent=4)
+    elif args.mode == 'eval':
+        model.load_state_dict(torch.load(f"{args.save_dir}/best_model.pt", map_location=args.device))
+        print("Starting evaluation ...")
+        metrics, metrics_by_perts, subgroup_metrics = trainer.evaluate(model, 
+                                                                    trainer.test_loader, 
+                                                                    device=args.device, 
+                                                                    amp=not args.no_amp, 
+                                                                    logger=logger, 
+                                                                    subgroups=trainer.test_subgroups)
+        if args.save_dir:
+            with open(f"{args.save_dir}/eval_metrics.json", "w") as f:
+                json.dump({
+                    "metrics": metrics,
+                    "metrics_by_perts": metrics_by_perts,
+                    "subgroup_metrics": subgroup_metrics
+                }, f, indent=4)
+    
+    # Predict perturbation response using the best model.
+    elif args.mode == 'predict':
+        model.load_state_dict(torch.load(f"{args.save_dir}/best_model.pt", map_location=args.device))
+        assert args.perturbation is not None, "Please specify a perturbation for prediction."
+        print(f"Starting prediction for perturbation {args.perturbation}...")
+        ctrl_adata = trainer.test_dataset.adata[trainer.test_dataset.adata.obs[args.condition_col] == args.control_condition]
+        pred = model.predict(perturbation=args.perturbation, 
+                                ctrl_adata=ctrl_adata, 
+                                tokenizer=trainer.tokenizer,
+                                n_samples=args.n_samples,
+                                pert_delimiter=args.condition_delimiter,
+                                control_condition=args.control_condition)
+        print(f"Prediction for perturbation {args.perturbation} completed. Shape of prediction: {pred.shape}")
+        if args.save_dir:
+            torch.save(pred, f"{args.save_dir}/pred_{args.perturbation}.pt")
+            print(f"Prediction saved to {args.save_dir}/pred_{args.perturbation}.pt")
+    else:
+        raise ValueError(f"Unknown mode '{args.mode}'. Expected one of: 'train', 'eval', 'predict'.")
 
     print("Done.")
-
+    

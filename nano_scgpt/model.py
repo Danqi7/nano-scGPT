@@ -3,8 +3,13 @@ from dataclasses import dataclass
 import torch
 import torch.nn as nn
 
+import scanpy as sc
+import numpy as np
+
 from huggingface_hub import hf_hub_download
 from safetensors.torch import load_file
+from nano_scgpt.scGPT_tokenizer import scGPTTokenizer
+
 
 @dataclass
 class scGPTConfig:
@@ -255,6 +260,39 @@ class scGPTForPerturbationResponsePrediction(nn.Module):
         pred = self.decoder(h, gene_values).squeeze(-1) # [B, T]
         
         return pred
+    
+    def predict(self, 
+                perturbation: str, 
+                ctrl_adata: sc.AnnData, 
+                tokenizer: scGPTTokenizer,
+                n_samples: int = 64,
+                pert_delimiter: str = "+",
+                control_condition: str = "ctrl") -> torch.Tensor:
+        device = next(self.parameters()).device
+        self.eval()
+        self.to(device)
+
+        gene_names = ctrl_adata.var['gene_symbol'].tolist()
+        gene_ids = torch.tensor([
+            tokenizer.vocab.get(g, tokenizer.vocab.get("<pad>"))   # OOV → <pad> token id
+            for g in gene_names
+        ]).repeat(n_samples, 1).to(device) # [n_samples, G]
+
+        pert_genes = perturbation.split(pert_delimiter)
+        pert_genes = set([g for g in pert_genes if g != control_condition])
+        pert_labels = [g in pert_genes for g in gene_names]
+        pert_labels = torch.tensor(pert_labels, dtype=torch.int64).repeat(n_samples, 1).to(device) # [n_samples, G]
+        assert pert_labels.sum() > 0, f"Perturbation '{perturbation}' does not match any genes in the dataset."
+        
+        sampled_idx = np.random.choice(ctrl_adata.n_obs, size=n_samples, replace=True)
+        sampled_ctrl_adata = ctrl_adata[sampled_idx, :].copy()
+        gene_values = torch.tensor(sampled_ctrl_adata.X.toarray(), dtype=torch.float32).to(device)
+        src_key_padding_mask = torch.zeros_like(gene_values, dtype=torch.bool).to(device)
+
+        with torch.no_grad():
+            pred = self.forward(gene_ids, gene_values, src_key_padding_mask, pert_labels) # [n_samples, G]
+
+        return pred.mean(dim=0) # [G]
 
     @classmethod
     def from_pretrained(cls, model_type="scGPT_human"):

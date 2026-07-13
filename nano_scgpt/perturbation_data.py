@@ -113,6 +113,7 @@ class PerturbationDataSplitter:
         """
         Split perturbations into train and test sets, and further categorize the test perturbations into combo_seen0, combo_seen1, combo_seen2, 
         and single_unseen based on the presence of their individual genes in the training set.
+        Adapted from: https://github.com/snap-stanford/GEARS/blob/f374e43e197b295016d80395d7a54ddb81cc6769/gears/data_utils.py
 
         Args:
             pert_names: list of perturbation names, e.g. ["geneA", "geneB", "geneA+ctrl", ...], excluding the control condition.
@@ -183,7 +184,7 @@ class PerturbationDataset(Dataset):
                  split='train', num_ctrl=1, 
                  keep_genes_per_cell=False):
         self.adata = adata
-        self.tokenizer = tokenizer # NOTE: need to flag `filter_zero_expr_genes=False` for the perturbation task since we want to keep the zero-expression genes for prediction.
+        self.tokenizer = tokenizer
         self.gene_names = adata.var['gene_symbol'].tolist()
         self.split = split
         self.num_ctrl = num_ctrl
@@ -221,7 +222,6 @@ class PerturbationDataset(Dataset):
             elif split == 'train': # only include ctrl-ctrl pairs in the training set.
                 self.pairs.append((idx, idx, [self.control_condition], condition))
         
-        # TODO: Do DGE analysis for each perturbation vs ctrl and save the top K DE genes for evaluation.
         self.perturbations = adata.obs[self.condition_col].unique().tolist()
         
     def __len__(self):
@@ -256,10 +256,10 @@ class PerturbationDataset(Dataset):
         B, n_genes   = gene_values.shape
 
         # sample gene subset ONCE for the whole batch, only for train. for val/test, full gene sets are returned.
+        # ![NOTE]: In the og scGPT tutorial, random sampling is performed and it means perturbed genes may get dropped with probability ((n_genes-max_length)/n_genes), 
+        # which flags the whole pair as NOT perturbed but in reality it is. This can be misleading for the model.
+        # A potential solution is to always keep the perturbed genes and only sample from the non-perturbed genes to fill up the T tokens.
         if self.split == 'train' and n_genes > self.T:
-            # ![TODO][NOTE]: this means perturbed genes may get dropped with probability (T/n_genes), which flags the whole pair as NOT perturbed but in reality it is.
-            # This can be misleading for the model, and degrade fine-tuning performance on the perturbation prediction task. 
-            # A potential solution is to always keep the perturbed genes and only sample from the non-perturbed genes to fill up the T tokens.
             if self.keep_genes_per_cell: # always keep perturbed genes for each cell.
                 # per-example: keep this example's perturbed gene(s), sample the rest from its own non-perturbed genes
                 idx_list = []
@@ -281,7 +281,7 @@ class PerturbationDataset(Dataset):
                 pert_labels   = torch.gather(pert_labels, 1, idx)
                 target_values = torch.gather(target_values, 1, idx)
                 gene_ids      = torch.from_numpy(self.gene_ids).long()[idx]     # (B, T), per-row now
-            else: # og scgpt version
+            else: # og scgpt version, perturbed genes may get dropped with probability ((n_genes-max_length)/n_genes)
                 idx = torch.randperm(n_genes)[:self.T]
 
                 gene_values   = gene_values[:, idx]

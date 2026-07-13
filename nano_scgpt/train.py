@@ -53,9 +53,9 @@ def preprocess_adata(adata: sc.AnnData,
     if not _check_log1ped(adata.X):
         print("Applying log1p transformation to the data...")
         sc.pp.log1p(adata)
-    if len(adata.var) > 5000:
-        print("Detected more than 5000 genes. Selecting top 5000 highly variable genes...")
-        sc.pp.highly_variable_genes(adata, n_top_genes=5000, subset=True)
+    if len(adata.var) > 6000:
+        print("Detected more than 6000 genes. Selecting max top 6000 highly variable genes...")
+        sc.pp.highly_variable_genes(adata, n_top_genes=6000, subset=True)
 
     if 'rank_genes_groups_cov_all' not in adata.uns:
         print("Computing rank_genes_groups_cov_all for later evaluation ...")
@@ -242,96 +242,3 @@ class PerturbationTrainer:
             log(f"Subgroup Metrics: {subgroup_metrics}", logger)
     
         return metrics, metrics_by_perts, subgroup_metrics
-
-
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--data", default="adamson", type=str, choices=["adamson", "norman", "replogle_k562_essential"], help="Dataset to use for training and evaluation.")
-    parser.add_argument("--data_file", default=None, help="Path to the data file.")
-    parser.add_argument("--gene_symbol_col", default="gene_name", type=str, help="Column name in adata.var that contains gene symbols.")
-    parser.add_argument("--condition_col", default="condition", type=str, help="Column name in adata.obs that contains condition names.")
-    parser.add_argument("--condition_delimiter", default="+", type=str, help="Delimiter used in condition names to separate multiple genes.")
-    parser.add_argument("--control_condition", default="ctrl", type=str, help="Name of the control condition in the dataset.")
-    parser.add_argument("--covariate", default="cell_type", type=str, help="Covariate column in adata.obs for DGE analysis.")
-    parser.add_argument("--groupby", default="condition_name", type=str, help="Column in adata.obs to group by for DGE analysis."),
-    parser.add_argument("--pre_normalized", action='store_true', help="Whether the input data is already normalized. If not, normalization will be applied.")
-
-    parser.add_argument("--mode", type=str, default="train", choices=["train", "eval"], help="Whether to train the model or evaluate the best saved model on the test set.")
-    parser.add_argument("--batch_size", type=int, default=64, help="Batch size for training and evaluation.")
-    parser.add_argument("--n_epochs", type=int, default=15, help="Number of training epochs.")
-    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate for the optimizer.")
-    parser.add_argument("--scheduler_step_size", type=int, default=1, help="Step size for the learning rate scheduler.")
-    parser.add_argument("--no_amp", action='store_true', help="Whether to disable automatic mixed precision (AMP) for training.")
-    parser.add_argument("--early_stopping_patience", type=int, default=10, help="Number of epochs to wait for improvement before early stopping.")
-    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility.")    
-    parser.add_argument("--keep_genes_per_cell", action='store_true', help="Whether to keep genes per cell in the input data. OG scGPT default to False.")
-    parser.add_argument("--load_splits", action='store_true', help="Whether to load pre-saved train/val/test splits from a file. If not, new splits will be created and saved.")
-    parser.add_argument("--log", action='store_true', help="Whether to log the training and evaluation process to a file.")
-
-    args = parser.parse_args()
-
-    os.makedirs(f"./results/{args.data}", exist_ok=True)
-    save_dir = f"./results/{args.data}/keep_genes_per_cell_{args.keep_genes_per_cell}_seed_{args.seed}"
-    os.makedirs(save_dir, exist_ok=True)
-    args.save_dir = save_dir
-
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    if torch.backends.mps.is_available():
-        device = 'mps'
-    args.device = device
-    
-    logger = None
-    if args.log:
-        logging.basicConfig(
-            filename=f"{args.save_dir}/run.log",
-            level=logging.INFO,
-            format="%(asctime)s | %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S",
-        )
-        logger = logging.getLogger(__name__)
-        log(f"Arguments: {args}", logger)
-    
-    # Load data
-    if not args.data_file:
-        adata = sc.read_h5ad(f"./data/{args.data}/perturb_processed.h5ad")
-        adata.var['gene_symbol'] = adata.var[args.gene_symbol_col]
-    else:
-        adata = sc.read_h5ad(args.data_file)
-        adata = preprocess_adata(adata,
-                                  gene_symbol_col=args.gene_symbol_col, 
-                                  covariate=args.covariate, 
-                                  condition_col=args.condition_col,
-                                  condition_delimiter=args.condition_delimiter,
-                                  control_condition=args.control_condition, 
-                                  groupby=args.groupby, 
-                                  pre_normalized=args.pre_normalized)
-
-    
-    # Tokenizer
-    tokenizer = scGPTTokenizer.from_pretrained("scGPT_human")
-    tokenizer.max_length = 1536
-
-    # Model
-    model = scGPTForPerturbationResponsePrediction.from_pretrained("scGPT_human")
-
-    trainer = PerturbationTrainer(model=model, adata=adata, tokenizer=tokenizer, args=args, logger=logger)
-    if args.mode == 'train':
-        trainer.train()
-    
-    # Evaluate best model on test set.
-    model.load_state_dict(torch.load(f"{args.save_dir}/best_model.pt", map_location=args.device))
-    metrics, metrics_by_perts, subgroup_metrics = trainer.evaluate(model, 
-                                                                   trainer.test_loader, 
-                                                                   device=args.device, 
-                                                                   amp=not args.no_amp, 
-                                                                   logger=logger, 
-                                                                   subgroups=trainer.test_subgroups)
-    if args.save_dir:
-        with open(f"{args.save_dir}/eval_metrics.json", "w") as f:
-            json.dump({
-                "metrics": metrics,
-                "metrics_by_perts": metrics_by_perts,
-                "subgroup_metrics": subgroup_metrics
-            }, f, indent=4)
-
-    print("Training and evaluation completed.")
