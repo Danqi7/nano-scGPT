@@ -10,9 +10,9 @@ The simplest, fastest repository for scGPT inference, (soon) finetuning and trai
 Cell modeling is potentially the most exciting and under-indexed AI/ML area. The hope is to make state-of-the-art cell models more accessible to run, understand, and tinker with.
 
 ## Perturbation Response Prediction
-We reproduced the original scGPT on perturbation response prediction and identified a gene sampling flaw in the original scGPT tutorial. When the number of genes `n` exceeds `max_length` (default `1536`), the tutorial code randomly samples genes to fit within that length, which means the actual perturbed gene gets dropped with probability `(n - max_length) / n`. With `n ~5000` highly variable genes and `max_length ~1536`, this drops the perturbation signal in roughly 70% of training examples, so the model is effectively trained to treat perturbed cells as unperturbed most of the time.
+We reproduced the original scGPT on perturbation response prediction and identified a gene sampling flaw in the [original scGPT tutorial](https://github.com/bowang-lab/scGPT/blob/main/tutorials/Tutorial_Perturbation.ipynb). When the number of genes `n` exceeds `max_length` (default `1536`), the tutorial code randomly samples genes, which means the actual perturbed gene gets dropped with probability `(n - max_length) / n`. With `n ~5000` highly variable genes and `max_length ~1536`, this drops the perturbation signal in ~ 70% of training examples, so the model is effectively trained to treat perturbed cells as unperturbed most of the time.
 
-We fixed this by always keeping the perturbed gene(s) and sampling the rest of the gene set at random. You can toggle this sampling or OG sampling via `--keep_genes_per_cell`.
+We fixed this by always keeping the perturbed gene(s) and sampling the rest of the gene set. You can toggle this or the OG sampling via `--keep_genes_per_cell`.
 
 Interestingly, across most metrics and datasets, the fix leaves performance roughly flat or slightly lower than the original sampling. One of the biggest gain we see is on `Replogle K562/Pearson Delta (all genes)`, which improves from `0.275` to `0.316`.
 
