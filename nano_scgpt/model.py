@@ -26,7 +26,7 @@ class scGPTConfig:
 
     pad_token: str = "<pad>"
     pad_token_id: int = 60694
-    pad_value: int = -2 #TODO: double check if it should be set to 0 during prp.
+    pad_value: int = -2 # TODO: double check if it should be set to 0 during prp. but it's never used in prp since usually no padding.
 
     use_batch_labels: bool = False
     num_batch_labels: int | None = None
