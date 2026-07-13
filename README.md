@@ -9,6 +9,17 @@ The simplest, fastest repository for scGPT inference, (soon) finetuning and trai
 ## Why nano-scGPT
 Cell modeling is potentially the most exciting and under-indexed AI/ML area. The hope is to make state-of-the-art cell models more accessible to run, understand, and tinker with.
 
+## Perturbation Response Prediction
+We reproduced the original scGPT on perturbation response prediction and identified a gene sampling flaw in the original scGPT tutorial. When the number of genes `n` exceeds `max_length` (default `1536`), the tutorial code randomly samples genes to fit within that length, which means the actual perturbed gene gets dropped with probability `(n - max_length) / n`. With `n ~5000` highly variable genes and `max_length ~1536`, this drops the perturbation signal in roughly 70% of training examples, so the model is effectively trained to treat perturbed cells as unperturbed most of the time.
+
+We fixed this by always keeping the perturbed gene(s) and sampling the rest of the gene set at random. You can toggle this sampling or OG sampling via `--keep_genes_per_cell`.
+
+Interestingly, across most metrics and datasets, the fix leaves performance roughly flat or slightly lower than the original sampling. One of the biggest gain we see is on `Replogle K562/Pearson Delta (all genes)`, which improves from `0.275` to `0.316`.
+
+![prp_eval_results](assets/prp_metrics_comparison.png)
+
+*Results are computed from 5 independent runs each with different data splits and seeds.*
+
 ## Runtime
 nano-scGPT produces embeddings numerically equivalent to the original
 while running **1.38x** faster, mostly from a clean forward pass plus `torch.compile`.
@@ -79,13 +90,12 @@ python tasks/embedding.py \
 
 ## Task: Perturbation Response Prediction
 ```sh
-# Example: finetune on adamson dataset (downloaded automatically)
+# Example: finetune/evaluate on adamson dataset (downloaded automatically)
 python tasks/finetune_perturbation.py \
     --data adamson \
-    --mode train \
+    --mode <train/eval> \
     --load_splits \
     --pre_normalized \
-    --seed 42 \
     --keep_genes_per_cell # skip this if want og scGPT sampling
 
 # Or on your custom dataset
@@ -98,15 +108,6 @@ python tasks/finetune_perturbation.py  \
     --load_splits \
     --keep_genes_per_cell
 
-# example: Evaluate trained model
-python tasks/finetune_perturbation.py \
-    --data adamson \
-    --mode eval \
-    --load_splits \
-    --pre_normalized \
-    --seed 42 \
-    --keep_genes_per_cell # does not matter for sampling since eval uses all genes but it will load the correct saved model.
-
 # example: Predict purturbation results using trained model
 python tasks/finetune_perturbation.py \
     --data adamson \
@@ -114,13 +115,12 @@ python tasks/finetune_perturbation.py \
     --perturbation 'AARS+ctrl' \
     --load_splits \
     --pre_normalized \
-    --seed 42 \
-    --keep_genes_per_cell # does not matter for sampling since predict uses all genes but it will load the correct saved model.
+    --keep_genes_per_cell
 ```
 
 ### Data format: condition column
 If using custom data, prepare your AnnData such that the condition column in
-`adata.obs` encodes perturbations in the following format: control-conditioned cells use `ctrl`, single-gene perturbations use `gene+ctrl` (e.g. `KLF1+ctrl`), and double-gene perturbations use `gene1+gene2` (e.g. `KLF1+FOXA1`). Matching is case-sensitive. The built-in datasets (`adamson`, `norman`, `replogle_k562_essential`, `replogle_rpe1_essential`) already follow this convention.
+`adata.obs` encodes perturbations in the following format:
 
 | Type    | Format        | Example      |
 | ------- | ------------- | ------------ |
@@ -128,6 +128,8 @@ If using custom data, prepare your AnnData such that the condition column in
 | Single  | `gene+ctrl`   | `KLF1+ctrl`  |
 | Double  | `gene1+gene2` | `KLF1+FOXA1` |
 
+So control-conditioned cells use `ctrl`, single-gene perturbations use `gene+ctrl`, and double-gene perturbations use `gene1+gene2`. Matching is case-sensitive. 
+The built-in datasets (`adamson`, `norman`, `replogle_k562_essential`, `replogle_rpe1_essential`) already follow this convention.
 
 ## todos
 - [x] Finetuning for perturbation response prediction
