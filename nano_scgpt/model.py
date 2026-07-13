@@ -26,7 +26,7 @@ class scGPTConfig:
 
     pad_token: str = "<pad>"
     pad_token_id: int = 60694
-    pad_value: int = -2
+    pad_value: int = -2 # TODO: double check if it should be set to 0 during prp. but it's never used in prp since usually no padding.
 
     use_batch_labels: bool = False
     num_batch_labels: int | None = None
@@ -177,6 +177,7 @@ class scGPTModel(nn.Module):
 
         self.encoder = scGPTGeneEncoder(config)
         self.value_encoder = scGPTContinuousValueEncoder(config) # TODO: support categorical/scaling value encoders as well.
+        self.pert_encoder = nn.Embedding(3, config.n_embd, padding_idx=0) # TODO: double check cuz 0 means unperturbed.
 
         self.transformer_encoder = nn.ModuleDict(dict(
             layers = nn.ModuleList([scGPTBlock(config) for _ in range(config.n_layer)]),
@@ -191,12 +192,17 @@ class scGPTModel(nn.Module):
     def forward(self, 
                 gene_ids: torch.Tensor, 
                 gene_values: torch.Tensor, 
-                src_key_padding_mask: torch.BoolTensor | None = None, 
+                src_key_padding_mask: torch.BoolTensor | None = None,
+                pert_labels: torch.Tensor | None = None,
                 batch_labels: torch.Tensor | None = None) -> torch.Tensor:
         gene_embds = self.encoder(gene_ids)
         value_embds = self.value_encoder(gene_values)
         if self.config.input_embd == "continuous":
             input_embds = gene_embds + value_embds
+            
+            if pert_labels is not None:
+                pert_embds = self.pert_encoder(pert_labels)
+                input_embds = input_embds + pert_embds
         else:
             raise NotImplementedError(
                         f"input_emb_style='{self.config.input_embd}' not yet supported. "
@@ -228,6 +234,69 @@ class scGPTModel(nn.Module):
      
         model_path = hf_hub_download(repo_id="paradoxdan/nano-scGPT", filename="model.safetensors")
         state_dict = load_file(model_path, device="cpu")
-        model.load_state_dict(state_dict)
+        model.load_state_dict(state_dict, strict=False)
 
         return model
+
+class scGPTForPerturbationResponsePrediction(nn.Module):
+
+    def __init__(self, config):
+        super().__init__()
+        self.scgpt = scGPTModel(config)
+        self.decoder = AffineExprDecoder(config.n_embd)
+
+    def forward(self, 
+                gene_ids: torch.Tensor, 
+                gene_values: torch.Tensor, 
+                src_key_padding_mask: torch.BoolTensor | None = None,
+                pert_labels: torch.Tensor | None = None,
+                batch_labels: torch.Tensor | None = None) -> torch.Tensor:
+        h = self.scgpt(gene_ids, gene_values, src_key_padding_mask, pert_labels) # [B, T, n_embd]
+        pred = self.decoder(h, gene_values).squeeze(-1) # [B, T]
+        
+        return pred
+
+    @classmethod
+    def from_pretrained(cls, model_type="scGPT_human"):
+        base = scGPTModel.from_pretrained(model_type)
+        model = cls(base.config)
+        model.scgpt = base
+
+        print(
+            f"Loaded scGPT base weights, with {model.scgpt.get_num_params()/1e6:.2f}M parameters. "
+            f"Decoder randomly initialized with {sum(p.numel() for p in model.decoder.parameters())/1e6:.2f}M params."
+        )
+        return model
+
+
+
+class AffineExprDecoder(nn.Module):
+    def __init__(
+        self,
+        d_model: int
+    ):
+        
+        super().__init__()
+
+        self.coeff_decoder = nn.Sequential(
+            nn.Linear(d_model, d_model),
+            nn.LeakyReLU(),
+            nn.Linear(d_model, d_model),
+            nn.LeakyReLU(),
+            nn.Linear(d_model, 1),
+        )
+
+        self.bias_decoder = nn.Sequential(
+            nn.Linear(d_model, d_model),
+            nn.LeakyReLU(),
+            nn.Linear(d_model, d_model),
+            nn.LeakyReLU(),
+            nn.Linear(d_model, 1),
+        )
+
+    def forward(self, x: torch.Tensor, values: torch.Tensor) -> torch.Tensor:
+        coeff = self.coeff_decoder(x).squeeze(-1) # [B, T]
+        bias = self.bias_decoder(x).squeeze(-1) # [B, T]
+
+        pred = coeff * values + bias
+        return pred

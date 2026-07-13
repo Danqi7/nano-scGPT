@@ -77,6 +77,38 @@ python tasks/embedding.py \
     --output <path to save embeddings>
 ```
 
+## Task: Perturbation Response Prediction
+```sh
+# Example: finetune on adamson dataset (downloaded automatically)
+python tasks/finetune_perturbation.py 
+    --data adamson \
+    --mode train \
+    --load_splits \
+    --pre_normalized \
+    --keep_genes_per_cell
+
+# Or on your custom dataset
+python tasks/finetune_perturbation.py  \
+    --data_file <path to local .h5ad file> \
+    --gene_symbol_col <column name in adata.var that contains gene symbols> \
+    --condition_col <column name in adata.obs that contains condition names> \ 
+    --condition_delimiter <delimiter used in condition names to separate multiple genes> \
+    --control_condition <name of the control condition in the dataset> \
+    --mode train \
+    --pre_normalized \ 
+    --load_splits \
+    --keep_genes_per_cell
+
+# example: Evaluate trained model
+python tasks/finetune_perturbation.py 
+    --data adamson \
+    --mode eval \
+    --load_splits \
+    --pre_normalized \
+    --keep_genes_per_cell
+```
+
+
 ## todos
 - [ ] Finetuning for perturbation response prediction
 - [ ] Training from scratch

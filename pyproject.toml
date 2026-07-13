@@ -10,6 +10,8 @@ dependencies = [
     "scanpy",
     "huggingface-hub",
     "safetensors>=0.7.0",
+    "lovely-tensors>=0.1.22",
+    "requests>=2.34.2",
 ]
 
 [build-system]
