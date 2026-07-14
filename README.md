@@ -10,9 +10,9 @@ The simplest, fastest repository for scGPT inference, (soon) finetuning and trai
 Cell modeling is potentially the most exciting and under-indexed AI/ML area. The hope is to make state-of-the-art cell models more accessible to run, understand, and tinker with.
 
 ## Perturbation Response Prediction
-We reproduced the original scGPT on perturbation response prediction and identified a gene sampling flaw in the [original scGPT tutorial](https://github.com/bowang-lab/scGPT/blob/main/tutorials/Tutorial_Perturbation.ipynb). When the number of genes `n` exceeds `max_length` (default `1536`), the tutorial code randomly samples genes, which means the actual perturbed gene gets dropped with probability `(n - max_length) / n`. With `n ~5000` highly variable genes and `max_length ~1536`, this drops the perturbation signal in ~ 70% of training examples, so the model is effectively trained to treat perturbed cells as unperturbed most of the time.
+I reproduced the original scGPT on perturbation response prediction and identified a potential gene sampling flaw in the [original scGPT tutorial](https://github.com/bowang-lab/scGPT/blob/main/tutorials/Tutorial_Perturbation.ipynb). For each training batch, when the number of genes `n` exceeds `max_length` (default `1536`), the tutorial randomly samples genes, which means the actual perturbed gene gets dropped with probability `(n - max_length) / n`. With `n ~5000` highly variable genes and `max_length ~1536`, this drops the perturbation signal in ~ 70% of training examples, so the model is effectively trained to treat perturbed cells as unperturbed most of the time.
 
-We fixed this by always keeping the perturbed gene(s) and sampling the rest of the gene set. You can toggle this or the OG sampling via `--keep_genes_per_cell`.
+I fixed this by always keeping the perturbed gene(s) and sampling the rest of the gene set per training example. You can toggle this sampling fix via `--keep_genes_per_cell`.
 
 Interestingly, across most metrics and datasets, the fix leaves performance roughly flat or slightly lower than the original sampling. One of the biggest gain we see is on `Replogle K562/Pearson Delta (all genes)`, which improves from `0.275` to `0.316`.
 
@@ -140,7 +140,7 @@ Let me know what tasks or even models you'd like to see next!
 ## Acknowledgments
 1. This repository reimplements scGPT from scratch. All credit for the original model and method goes to the authors (Cui et al., *Nature Methods*, 2024). See the [original repo](https://github.com/bowang-lab/scGPT) and [paper](https://doi.org/10.1038/s41592-024-02201-0).
 2. nano-scGPT is inspired by Andrej Karpathy's [nanoGPT](https://github.com/karpathy/nanogpt) and Chris Hayduk's [minAlphaFold2](https://github.com/ChrisHayduk/minAlphaFold2).
-3. The perturbation data split is adapted from the [GEAR data split](https://github.com/snap-stanford/GEARS/blob/f374e43e197b295016d80395d7a54ddb81cc6769/gears/data_utils.py).
+3. The perturbation data split is adapted from the [GEAR codebase](https://github.com/snap-stanford/GEARS/blob/f374e43e197b295016d80395d7a54ddb81cc6769/gears/data_utils.py).
 
 ## License
 MIT. See [LICENSE](LICENSE)
