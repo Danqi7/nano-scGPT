@@ -108,7 +108,7 @@ python tasks/finetune_perturbation.py  \
     --load_splits \
     --keep_genes_per_cell
 
-# example: Predict purturbation results using trained model
+# Example: Predict purturbation results using trained model
 python tasks/finetune_perturbation.py \
     --data adamson \
     --mode predict \
@@ -140,6 +140,7 @@ Let me know what tasks or even models you'd like to see next!
 ## Acknowledgments
 1. This repository reimplements scGPT from scratch. All credit for the original model and method goes to the authors (Cui et al., *Nature Methods*, 2024). See the [original repo](https://github.com/bowang-lab/scGPT) and [paper](https://doi.org/10.1038/s41592-024-02201-0).
 2. nano-scGPT is inspired by Andrej Karpathy's [nanoGPT](https://github.com/karpathy/nanogpt) and Chris Hayduk's [minAlphaFold2](https://github.com/ChrisHayduk/minAlphaFold2).
+3. The perturbation data split is adapted from the [GEAR data split](https://github.com/snap-stanford/GEARS/blob/f374e43e197b295016d80395d7a54ddb81cc6769/gears/data_utils.py).
 
 ## License
 MIT. See [LICENSE](LICENSE)
