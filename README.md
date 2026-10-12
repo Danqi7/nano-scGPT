@@ -1,5 +1,7 @@
 # nano-scGPT
 
+> [!NOTE] nano-scGPT is now part of [nanomirrors](https://github.com/windmirrorai/nanomirrors), clean PyTorch implementations of state-of-the-art bio cell models behind one unified API and framework. 
+
 The simplest, fastest repository for scGPT inference, (soon) finetuning and training, with minimal dependencies. It reimplements the original [scGPT](https://github.com/bowang-lab/scGPT) from scratch. `nano_scgpt/model.py` is pure PyTorch in ~270 lines of code, and `nano_scgpt/scGPT_tokenizer.py` turns raw scRNA data into model input. Small enough to read in one sitting and hack on.
 
 ![nano_scgpt](assets/nano_vs_og.png)
